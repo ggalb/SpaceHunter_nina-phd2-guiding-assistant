@@ -105,6 +105,8 @@ working mount/aux-mount connection.
 | 20 | Mount connect failed |
 | 21 | Slew failed or timed out |
 | 22 | Post-slew position sanity check failed |
+| 23 | Mount reports an invalid sidereal time or site location |
+| 24 | Driver lacks a capability the script requires |
 | 30 | No guide star found |
 | 31 | Guiding failed to settle |
 | 40 | GA window did not appear |
@@ -112,7 +114,7 @@ working mount/aux-mount connection.
 | 42 | Star lost / PHD2 error alert during the GA run |
 | 43 | No `Apply` buttons offered |
 | 44 | Min-move values unchanged after Apply |
-| 50 | `FindHome` failed or timed out |
+| 50 | Stand-down (`FindHome` / `Park`) failed or timed out |
 | 99 | Unexpected error |
 
 A non-zero exit fails the N.I.N.A. instruction and will fire the
@@ -240,31 +242,50 @@ $e=$null
 Then a full run against the PHD2 camera simulator and the GSS mount
 simulator before trusting it on the real rig.
 
-## TODO — portability, before this is shared publicly
+## Portability
 
-Currently written and tested against one setup: EQ6-R Pro via GS Server,
-PHD2 2.6.14 with an English UI, N.I.N.A. 3.2, Windows 11. Nothing is
-tied to a particular PHD2 *profile* — the script uses whatever profile
-is loaded — and the mount driver is already a parameter
-(`-MountProgId`), so EQMOD (`EQMOD.Telescope`) or any other ASCOM driver
-can be passed in. But four things remain open:
+Developed against one setup — EQ6-R Pro via GS Server, PHD2 2.6.14 with
+an English UI, N.I.N.A. 3.2, Windows 11 — but nothing is tied to a
+particular PHD2 *profile*, and the mount driver is a parameter
+(`-MountProgId`), so EQMOD (`EQMOD.Telescope`), iOptron
+(`ASCOM.iOptron2017.Telescope`), ZWO (`ASCOM.ASIMount.Telescope`) or any
+other ASCOM driver can be passed in.
 
-1. **ASCOM capability checks.** The script calls `FindHome()`,
-   `Unpark()` and `SlewToCoordinatesAsync()` without checking
-   `CanFindHome`, `CanUnpark` or `CanSlewAsync`. Many mounts have no
-   home sensor and support only `Park()`; on those this fails at exit 50
-   every run. Should check first, fall back to a synchronous slew and to
-   `Park()`, and fail early with a clear message.
-2. **English-language PHD2 assumed.** The window title
+### Done (2026-07-27)
+
+- **Capabilities are read at runtime**, after connecting to the actual
+  mount, and logged. See the warning in
+  `ASCOM_Mount_Capabilities.md`: flags are *not* static per driver, so a
+  lookup table would be wrong.
+- **`-EndAction`** accepts `Auto` (default), `Home`, `Park` or `None`.
+  `Auto` prefers `FindHome()`, falls back to `Park()`, and warns if the
+  driver supports neither.
+- **Slew falls back** to the blocking `SlewToCoordinates()` when
+  `CanSlewAsync` is false.
+- **Unpark and tracking are checked** against `CanUnpark` and
+  `CanSetTracking`, failing early with exit 24 rather than throwing.
+- **Site and sidereal time are validated before any movement** (exit 23).
+  Prompted by the ZWO driver reporting `SiderealTime = -1` and the
+  iOptron reporting site 0,0 while idle — either would have produced a
+  meaningless target and slewed the mount to it.
+- **`SideOfPier` is only used when meaningful**; `pierUnknown` degrades
+  the post-slew check to declination and hour angle only.
+
+### Still open
+
+1. **English-language PHD2 assumed.** The window title
    `Guiding Assistant`, the menu caption, and the captions `Start`,
    `Stop`, `Apply` and `Measure Declination Backlash` are matched as
    literal English strings. A localised PHD2 fails at exit 40. Could be
-   lifted into parameters at the top of the script.
-3. **End-of-run action is hardcoded** to `FindHome`. Worth making a
-   `-EndAction` parameter accepting `Home`, `Park` or `None`.
-4. **GEM assumed.** `SideOfPier` is already wrapped in try/catch so fork
-   and alt-az mounts won't crash, but the "5° west of the meridian"
-   positioning logic is written with a German equatorial in mind.
+   lifted into parameters.
+2. **GEM assumed** in the positioning logic. Alt-az mounts now get a
+   warning, but "Dec 0, 5° west of the meridian" still isn't meaningful
+   for them.
+3. **Guide star SNR is not checked** after settling. A marginal star
+   means 130 s of measurement producing recommendations from a star that
+   keeps dropping out. Aborting early would be better.
+4. **`MaxStarLost = 8`** during the GA run is a guess, never calibrated
+   against real sky.
 
 Southern hemisphere is *not* a concern: approaching from the south and
 finishing northward is correct in both, and a GEM pointing west of the

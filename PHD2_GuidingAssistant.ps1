@@ -33,6 +33,8 @@
    20  Mount (ASCOM/GSS) connect failed
    21  Mount slew failed or timed out
    22  Post-slew position sanity check failed
+   23  Mount reports an invalid sidereal time or site location
+   24  Mount driver lacks a capability the script requires
    30  No guide star found
    31  Guiding failed to settle
    40  Guiding Assistant window did not appear
@@ -40,7 +42,7 @@
    42  Star lost / PHD2 error alert during the GA run
    43  No Apply buttons offered after the GA run
    44  Min-move values did not change after clicking Apply
-   50  FindHome failed or timed out
+   50  Stand-down (FindHome / Park) failed or timed out
    99  Unexpected error (see log)
 =====================================================================
 #>
@@ -68,6 +70,11 @@ param(
     [int]    $SlewTimeoutSec       = 180,
     [int]    $HomeTimeoutSec       = 300,
     [double] $PositionToleranceDeg = 3.0,    # post-slew sanity check
+
+    # What to do with the mount when finished.
+    #   Auto = FindHome if the driver supports it, else Park, else nothing
+    [ValidateSet('Auto', 'Home', 'Park', 'None')]
+    [string] $EndAction            = 'Auto',
 
     # ---- Behaviour ---------------------------------------------------
     [switch] $Simulate,                      # skip all mount movement
@@ -282,6 +289,106 @@ function Phd-GetMinMove {
 
 $script:Mount        = $null
 $script:MountWeOpened = $false     # did *we* set Connected = true?
+$script:Caps          = @{}        # capabilities, read AFTER connecting
+
+# Read a driver property defensively. ASCOM drivers are entitled to throw
+# PropertyNotImplementedException and several do.
+function Get-MountProp {
+    param([string]$Name, $Default = $null)
+    try {
+        $v = $script:Mount.$Name
+        if ($null -eq $v) { return $Default }
+        return $v
+    } catch { return $Default }
+}
+
+# IMPORTANT: capabilities are read at runtime, after connecting to the
+# actual mount - never from a lookup table. Established 2026-07-27: the
+# iOptron driver reports CanFindHome = False while idle with no mount
+# attached, but True once connected to a real CEM70EC. A static table
+# would therefore be wrong.
+function Mount-ReadCapabilities {
+    foreach ($c in 'CanPark','CanUnpark','CanFindHome','CanSlew','CanSlewAsync',
+                   'CanSetTracking','CanPulseGuide','CanSync') {
+        $script:Caps[$c] = [bool](Get-MountProp $c $false)
+    }
+
+    $align = Get-MountProp 'AlignmentMode' $null
+    $script:Caps['AlignmentMode'] = $align
+    $script:Caps['IsAltAz']       = ($null -ne $align -and [int]$align -eq 0)
+
+    $eq = Get-MountProp 'EquatorialSystem' $null
+    $script:Caps['EquatorialSystem'] = $eq
+
+    # SideOfPier is only useful if it is implemented AND not pierUnknown
+    $pier = $null
+    try { $pier = $script:Mount.SideOfPier } catch { }
+    $script:Caps['HasPierSide'] = ($null -ne $pier -and [int]$pier -ge 0)
+
+    Write-Log ("Driver capabilities: FindHome={0}  Park={1}  Unpark={2}  SlewAsync={3}  SetTracking={4}  PierSide={5}" -f `
+               $script:Caps['CanFindHome'], $script:Caps['CanPark'], $script:Caps['CanUnpark'],
+               $script:Caps['CanSlewAsync'], $script:Caps['CanSetTracking'], $script:Caps['HasPierSide'])
+
+    $eqText = switch ($(if ($null -ne $eq) { [int]$eq } else { -1 })) {
+        0 { 'Other' } 1 { 'Topocentric' } 2 { 'J2000' } 3 { 'B1950' } default { 'unknown' }
+    }
+    $alignText = switch ($(if ($null -ne $align) { [int]$align } else { -1 })) {
+        0 { 'Alt-Az' } 1 { 'Polar' } 2 { 'German Polar (GEM)' } default { 'unknown' }
+    }
+    Write-Log "Alignment = $alignText.  Equatorial system = $eqText."
+
+    # --- hard requirements -------------------------------------------
+    if (-not ($script:Caps['CanSlew'] -or $script:Caps['CanSlewAsync'])) {
+        Fail 24 "Driver reports it cannot slew to coordinates. This script cannot position the mount."
+    }
+
+    # --- advisories ---------------------------------------------------
+    if ($script:Caps['IsAltAz']) {
+        Write-Log ("Mount reports Alt-Az alignment. The 'Dec 0, {0} deg west of meridian' " +
+                   "positioning assumes a German equatorial; results may not be meaningful." -f $MeridianOffsetDeg) 'WARN'
+    }
+    if ($null -ne $eq -and [int]$eq -eq 2) {
+        Write-Log ("Driver uses J2000 coordinates while this script computes of-date coordinates " +
+                   "from SiderealTime. Offset is ~0.4 deg in 2026 - negligible at a {0} deg " +
+                   "meridian offset, but worth knowing." -f $MeridianOffsetDeg) 'WARN'
+    }
+    if (-not $script:Caps['HasPierSide']) {
+        Write-Log "SideOfPier unavailable or pierUnknown - the post-slew check will test declination and hour angle only." 'WARN'
+    }
+}
+
+# The ZWO driver returned SiderealTime = -1 when idle, and the iOptron
+# returned site 0,0. Either would make the computed target meaningless
+# and send the mount somewhere arbitrary. Check BEFORE moving anything.
+function Mount-ValidateSite {
+    $lst = Get-MountProp 'SiderealTime' $null
+    if ($null -eq $lst) {
+        Fail 23 "Mount does not report SiderealTime, which this script needs to compute the target."
+    }
+    $lst = [double]$lst
+    if ($lst -lt 0 -or $lst -ge 24 -or [double]::IsNaN($lst)) {
+        Fail 23 ("Mount reports SiderealTime = {0}, which is not a valid 0-24h value. " +
+                 "Usually means the driver has no site configured or no mount attached." -f $lst)
+    }
+
+    $lat = Get-MountProp 'SiteLatitude'  $null
+    $lon = Get-MountProp 'SiteLongitude' $null
+
+    if ($null -eq $lat -or $null -eq $lon) {
+        Write-Log "Mount does not report a site location - cannot sanity-check it." 'WARN'
+    }
+    else {
+        $lat = [double]$lat; $lon = [double]$lon
+        if ($lat -lt -90 -or $lat -gt 90 -or $lon -lt -180 -or $lon -gt 180) {
+            Fail 23 ("Mount reports an impossible site: lat {0}, long {1}." -f $lat, $lon)
+        }
+        if ([Math]::Abs($lat) -lt 0.001 -and [Math]::Abs($lon) -lt 0.001) {
+            Write-Log ("Mount reports site 0.000, 0.000 - the Gulf of Guinea. Almost certainly an " +
+                       "unset default. Pointing will be wrong; check the driver's site settings.") 'WARN'
+        }
+        Write-Log ("Site: lat {0:N4}, long {1:N4}.  Local sidereal time {2:N4}h." -f $lat, $lon, $lst)
+    }
+}
 
 function Mount-Connect {
     if ($Simulate) { Write-Log "[SIMULATE] skipping mount connect."; return }
@@ -300,6 +407,9 @@ function Mount-Connect {
     if (-not $script:Mount.Connected) { Fail 20 "Mount reports Connected = false." }
     Write-Log ("Mount connected. Name='{0}'  AtPark={1}  Tracking={2}" -f `
                $script:Mount.Name, $script:Mount.AtPark, $script:Mount.Tracking)
+
+    Mount-ReadCapabilities
+    Mount-ValidateSite
 }
 
 function Mount-Release {
@@ -334,17 +444,30 @@ function Mount-WaitSlew {
 
 # Compute an RA that sits $OffsetDeg degrees WEST of the meridian.
 # Hour angle is positive to the west, so RA = LST - offset.
-# NOTE: this produces topocentric-of-date coordinates. If the driver
-# reports EquatorialCoordinateType = J2000 there is a ~0.4 deg
-# precession discrepancy in 2026 - irrelevant at a 5 deg offset, but
-# that's why it isn't corrected for.
+# Produces topocentric-of-date coordinates; Mount-ReadCapabilities warns
+# if the driver expects J2000 instead.
 function Get-TargetRA {
     param([double]$OffsetDeg)
     $lst = [double]$script:Mount.SiderealTime          # hours
+    if ($lst -lt 0 -or $lst -ge 24) {
+        Fail 23 ("SiderealTime became invalid ({0}) while computing the target." -f $lst)
+    }
     $ra  = $lst - ($OffsetDeg / 15.0)
     while ($ra -lt 0)   { $ra += 24.0 }
     while ($ra -ge 24)  { $ra -= 24.0 }
     return $ra
+}
+
+# Use the async slew where available and fall back to the blocking call.
+function Mount-StartSlew {
+    param([double]$RA, [double]$Dec, [string]$Label)
+    if ($script:Caps['CanSlewAsync']) {
+        $script:Mount.SlewToCoordinatesAsync($RA, $Dec)
+        return $true          # caller must poll Slewing
+    }
+    Write-Log "Driver has no async slew - using the blocking SlewToCoordinates for $Label."
+    $script:Mount.SlewToCoordinates($RA, $Dec)
+    return $false             # already finished on return
 }
 
 function Mount-SlewToCalibrationSpot {
@@ -354,14 +477,22 @@ function Mount-SlewToCalibrationSpot {
     }
 
     if ($script:Mount.AtPark) {
+        if (-not $script:Caps['CanUnpark']) {
+            Fail 24 "Mount is parked and the driver reports it cannot unpark. Unpark it manually and rerun."
+        }
         Write-Log "Mount is parked - unparking."
         $script:Mount.Unpark()
         Start-Sleep -Seconds 2
     }
+
     if (-not $script:Mount.Tracking) {
-        Write-Log "Enabling tracking."
-        $script:Mount.Tracking = $true
-        Start-Sleep -Seconds 2
+        if ($script:Caps['CanSetTracking']) {
+            Write-Log "Enabling tracking."
+            $script:Mount.Tracking = $true
+            Start-Sleep -Seconds 2
+        } else {
+            Fail 24 "Tracking is off and the driver reports it cannot be set. The Guiding Assistant needs a tracking mount."
+        }
     }
 
     # --- Leg 1: south of the target, to guarantee the final move is north
@@ -369,11 +500,11 @@ function Mount-SlewToCalibrationSpot {
     $ra1 = Get-TargetRA $MeridianOffsetDeg
     Write-Log ("Slew 1/2 (backlash approach): RA {0:N4}h  Dec {1:N2}deg" -f $ra1, $decSouth)
     try {
-        $script:Mount.SlewToCoordinatesAsync($ra1, $decSouth)
+        $async = Mount-StartSlew $ra1 $decSouth 'slew 1'
     } catch {
         Fail 21 "Slew 1 rejected by driver: $($_.Exception.Message)"
     }
-    if (-not (Mount-WaitSlew $SlewTimeoutSec)) { Fail 21 "Slew 1 timed out after ${SlewTimeoutSec}s." }
+    if ($async -and -not (Mount-WaitSlew $SlewTimeoutSec)) { Fail 21 "Slew 1 timed out after ${SlewTimeoutSec}s." }
 
     Start-Sleep -Seconds 2
 
@@ -381,11 +512,11 @@ function Mount-SlewToCalibrationSpot {
     $ra2 = Get-TargetRA $MeridianOffsetDeg      # recomputed - LST has advanced
     Write-Log ("Slew 2/2 (north, clears Dec backlash): RA {0:N4}h  Dec {1:N2}deg" -f $ra2, $TargetDec)
     try {
-        $script:Mount.SlewToCoordinatesAsync($ra2, $TargetDec)
+        $async = Mount-StartSlew $ra2 $TargetDec 'slew 2'
     } catch {
         Fail 21 "Slew 2 rejected by driver: $($_.Exception.Message)"
     }
-    if (-not (Mount-WaitSlew $SlewTimeoutSec)) { Fail 21 "Slew 2 timed out after ${SlewTimeoutSec}s." }
+    if ($async -and -not (Mount-WaitSlew $SlewTimeoutSec)) { Fail 21 "Slew 2 timed out after ${SlewTimeoutSec}s." }
 
     # --- Sanity check. Should never fire; guards against a wildly wrong
     #     pointing model putting us on the wrong side of the meridian.
@@ -397,8 +528,14 @@ function Mount-SlewToCalibrationSpot {
     while ($ha -gt  12) { $ha -= 24 }
     $haDeg = $ha * 15.0
 
-    $pierSide = 'unknown'
-    try { $pierSide = $script:Mount.SideOfPier.ToString() } catch { }
+    $pierSide = 'n/a'
+    if ($script:Caps['HasPierSide']) {
+        try {
+            $pierSide = switch ([int]$script:Mount.SideOfPier) {
+                0 { 'pierEast' } 1 { 'pierWest' } default { 'pierUnknown' }
+            }
+        } catch { $pierSide = 'n/a' }
+    }
 
     Write-Log ("Position after slew: Dec {0:N2}deg  HA {1:N2}deg (+ = west)  SideOfPier={2}" -f `
                $actualDec, $haDeg, $pierSide)
@@ -412,30 +549,81 @@ function Mount-SlewToCalibrationSpot {
     Write-Log "Position sanity check passed."
 }
 
-function Mount-GoHome {
-    if ($Simulate) { Write-Log "[SIMULATE] skipping FindHome."; return $true }
-    if (-not $script:Mount) { Write-Log "No mount handle - cannot home." 'WARN'; return $false }
+# Stand the mount down at the end of the run. Honours -EndAction and the
+# driver's actual capabilities. 'Auto' prefers FindHome, falls back to
+# Park, and does nothing if the driver supports neither - which is a
+# warning, not a failure, since the mount is still in a safe pointing
+# position and N.I.N.A. may want to carry on with it.
+function Mount-StandDown {
+    if ($Simulate) { Write-Log "[SIMULATE] skipping end-of-run stand-down."; return $true }
+    if (-not $script:Mount) { Write-Log "No mount handle - cannot stand down." 'WARN'; return $false }
 
-    Write-Log "Sending mount home (FindHome) ..."
-    try {
-        $script:Mount.FindHome()
-    } catch {
-        Write-Log "FindHome threw: $($_.Exception.Message)" 'ERROR'
-        return $false
+    $action = $EndAction
+    if ($action -eq 'Auto') {
+        if     ($script:Caps['CanFindHome']) { $action = 'Home' }
+        elseif ($script:Caps['CanPark'])     { $action = 'Park' }
+        else                                 { $action = 'None' }
+        Write-Log "EndAction 'Auto' resolved to '$action' from the driver's capabilities."
     }
 
-    # ASCOM allows FindHome to be either blocking or asynchronous, so poll.
-    $deadline = (Get-Date).AddSeconds($HomeTimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            if ((-not $script:Mount.Slewing) -and $script:Mount.AtHome) {
-                Write-Log "Mount is at home. Tracking = $($script:Mount.Tracking)"
-                return $true
+    switch ($action) {
+
+        'None' {
+            Write-Log "EndAction = None - leaving the mount where it is." 'WARN'
+            return $true
+        }
+
+        'Home' {
+            if (-not $script:Caps['CanFindHome']) {
+                Write-Log "EndAction = Home but the driver reports CanFindHome = false." 'ERROR'
+                return $false
             }
-        } catch { }
-        Start-Sleep -Seconds 2
+            Write-Log "Sending mount home (FindHome) ..."
+            try { $script:Mount.FindHome() }
+            catch {
+                Write-Log "FindHome threw: $($_.Exception.Message)" 'ERROR'
+                return $false
+            }
+            # ASCOM allows FindHome to block or return immediately, so poll.
+            $deadline = (Get-Date).AddSeconds($HomeTimeoutSec)
+            while ((Get-Date) -lt $deadline) {
+                try {
+                    if ((-not $script:Mount.Slewing) -and $script:Mount.AtHome) {
+                        Write-Log "Mount is at home. Tracking = $($script:Mount.Tracking)"
+                        return $true
+                    }
+                } catch { }
+                Start-Sleep -Seconds 2
+            }
+            Write-Log "FindHome did not report AtHome within ${HomeTimeoutSec}s." 'ERROR'
+            return $false
+        }
+
+        'Park' {
+            if (-not $script:Caps['CanPark']) {
+                Write-Log "EndAction = Park but the driver reports CanPark = false." 'ERROR'
+                return $false
+            }
+            Write-Log "Parking mount ..."
+            try { $script:Mount.Park() }
+            catch {
+                Write-Log "Park threw: $($_.Exception.Message)" 'ERROR'
+                return $false
+            }
+            $deadline = (Get-Date).AddSeconds($HomeTimeoutSec)
+            while ((Get-Date) -lt $deadline) {
+                try {
+                    if ((-not $script:Mount.Slewing) -and $script:Mount.AtPark) {
+                        Write-Log "Mount is parked. Tracking = $($script:Mount.Tracking)"
+                        return $true
+                    }
+                } catch { }
+                Start-Sleep -Seconds 2
+            }
+            Write-Log "Park did not report AtPark within ${HomeTimeoutSec}s." 'ERROR'
+            return $false
+        }
     }
-    Write-Log "FindHome did not report AtHome within ${HomeTimeoutSec}s." 'ERROR'
     return $false
 }
 
@@ -1174,7 +1362,7 @@ try {
     try { Phd-Call 'stop_capture' | Out-Null } catch { Write-Log "stop_capture failed: $($_.Exception.Message)" 'WARN' }
     Start-Sleep -Seconds 2
 
-    if (-not (Mount-GoHome)) { Fail 50 "Mount failed to reach the home position." }
+    if (-not (Mount-StandDown)) { Fail 50 "Mount failed to reach its end-of-run position." }
 
     Write-Log "Routine completed successfully."
     $exitCode = 0
@@ -1200,9 +1388,9 @@ catch {
 
     try {
         if (-not $script:Mount -and -not $Simulate) { Mount-Connect }
-        Write-Log "Recovery: sending mount home."
-        Mount-GoHome | Out-Null
-    } catch { Write-Log "Recovery homing failed: $($_.Exception.Message)" 'ERROR' }
+        Write-Log "Recovery: standing the mount down."
+        Mount-StandDown | Out-Null
+    } catch { Write-Log "Recovery stand-down failed: $($_.Exception.Message)" 'ERROR' }
 }
 finally {
     Phd-Disconnect
