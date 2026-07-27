@@ -1,0 +1,10 @@
+# Runtime output — never commit these
+PHD2_GA_*.log
+NINA_console.txt
+*.log
+
+# Windows / editor noise
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
