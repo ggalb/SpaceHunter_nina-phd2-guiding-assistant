@@ -1,6 +1,8 @@
 # Runtime output — never commit these
+logs/
 PHD2_GA_*.log
 NINA_console.txt
+stderr.txt
 *.log
 
 # Windows / editor noise

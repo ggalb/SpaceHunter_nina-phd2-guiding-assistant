@@ -66,13 +66,21 @@ N.I.N.A. holds its own PHD2 connection all night. Leaving PHD2 guiding
 while the mount goes to Dec 90° with tracking off would lose the star and
 leave N.I.N.A.'s later "start guiding" step in a confused state.
 
-**Why it does not disconnect the mount.**
-GSS is a hub. The script opens its own client connection and closes it
-again on the way out, which does not disturb N.I.N.A.'s separate client
-connection. Caveat observed on 2026-07-26: if the script is the *only*
-client, closing its connection makes GSS drop the hardware link
-entirely. In production N.I.N.A. connects all equipment at sunset, well
-before this instruction runs, so the link stays up.
+**Why it never disconnects the mount.**
+The script does not set `Connected = false` under any circumstances. It
+releases the COM object and lets the process exit, which drops its own
+client.
+
+The reasoning changed once, and the correction matters. An initial dump
+on 2026-07-27 suggested each ASCOM client held its own `Connected`
+state, which would have made a tidy disconnect safe. Two full runs later
+the same day contradicted it: run 1 took 8 s to connect and reported
+releasing its handle, while run 2 — with N.I.N.A. connected — found
+`Connected` already true and left it alone. That points to GS Server
+sharing **one** `Connected` state across clients, in which case setting
+it false would tear down N.I.N.A.'s link mid-sequence.
+
+Not touching it costs nothing and removes the failure mode entirely.
 
 **On syncing after TPPA — deliberately not done.**
 Turning the alt/az bolts moves the physical RA axis *closer* to the pole,
@@ -210,7 +218,23 @@ value is 130. The script logs a warning if it is set lower.
 | 2 | `-Simulate`, PHD2 Simulator profile, 130 s | **Pass — exit 0**, 2026-07-26 |
 | 3 | Real mount slew + FindHome | **Pass** (accidental full run, 2026-07-26 15:51) — reached Dec 0.00, HA 5.03° W, SideOfPier=0, homed cleanly |
 | 4 | Launched from N.I.N.A., real mount, PHD2 simulator | **Pass — exit 0**, 2026-07-26 21:18, 4m00s end to end |
-| 5 | Full run on the real rig under real sky | Not yet done |
+| 5 | Regression after the capability rewrite, real mount | **Pass — exit 0**, 2026-07-27, three consecutive runs |
+| 6 | Failure paths | **Pass**, 2026-07-27 — see below |
+| 7 | Full run on the real rig under real sky | Not yet done |
+
+### Failure paths verified 2026-07-27
+
+| Guard | How it was provoked | Result |
+|---|---|---|
+| Exit 10 | `Tools > Enable Server` unchecked in PHD2 | Failed in 2 s with a clear message |
+| Exit 12 | Calibration cleared (needs `Auto restore calibration` off first, or PHD2 restores it) | Refused to run, refused to calibrate |
+| Exit 44 no longer spurious | Two runs producing identical recommendations | Warned and continued, exit 0 |
+| Extended Sampling | Stop clicked at 30 s, below PHD2's 2-minute minimum | Waited 90 s for the countdown window, then applied |
+
+Note: with `Auto restore calibration` enabled — which it is on this rig —
+PHD2 restores the last calibration on reconnect, so exit 12 is unlikely
+ever to fire in practice. That is the desired outcome; the guard exists
+for the case where calibration genuinely is absent.
 
 Stage 2 verified end to end: menu → window → backlash unchecked →
 auto-start detected → 130 s run → Stop → 2 Apply buttons clicked →

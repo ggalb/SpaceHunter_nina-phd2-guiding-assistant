@@ -10,30 +10,34 @@ REM  The PowerShell exit code is passed straight back to N.I.N.A., so a
 REM  non-zero exit fails the sequence instruction (and will fire the
 REM  "Failures to Pushover" global trigger).
 REM
-REM  ALL console output is appended to NINA_console.txt beside this
-REM  file. N.I.N.A. runs the script without a console we can read, so
-REM  that transcript is the only record of anything printed before the
-REM  script's own log file gets going - including the reason the log
-REM  file itself might be missing.
+REM  OUTPUT
+REM    - Progress prints to the console window N.I.N.A. opens, so you
+REM      can watch a run happen.
+REM    - The full run record is the script's own log, written to
+REM      logs\PHD2_GA_<timestamp>.log. Every line shown on screen is in
+REM      there too.
+REM    - Only stderr is captured to logs\stderr.txt, as a safety net for
+REM      a catastrophic failure that kills the script before its log
+REM      exists - the console window closes too fast to read in that
+REM      case.
 REM ===================================================================
 
 setlocal
 
 set "SCRIPT=%~dp0PHD2_GuidingAssistant.ps1"
-set "CONSOLE=%~dp0NINA_console.txt"
+set "LOGDIR=%~dp0logs"
+set "ERRLOG=%LOGDIR%\stderr.txt"
 
->>"%CONSOLE%" echo.
->>"%CONSOLE%" echo ==========================================================
->>"%CONSOLE%" echo  Run started %DATE% %TIME%
->>"%CONSOLE%" echo ==========================================================
+if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds 130 >>"%CONSOLE%" 2>&1
+echo.
+echo  Starting PHD2 Guiding Assistant routine - %DATE% %TIME%
+echo.
+
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds 130 2>>"%ERRLOG%"
 
 set RC=%ERRORLEVEL%
 
->>"%CONSOLE%" echo ----------------------------------------------------------
->>"%CONSOLE%" echo  Finished %DATE% %TIME%   exit code %RC%
->>"%CONSOLE%" echo ----------------------------------------------------------
-
+echo.
 echo Script finished with exit code %RC%
 exit /b %RC%

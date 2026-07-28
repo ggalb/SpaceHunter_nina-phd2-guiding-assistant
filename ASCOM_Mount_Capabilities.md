@@ -41,12 +41,14 @@ tells us which fallbacks the script actually needs.
 
 | Mount / driver | ProgID | Alignment | EqSystem | FindHome | Park | Unpark | SlewAsync | SetTracking | PulseGuide |
 |---|---|---|---|---|---|---|---|---|---|
+| Sky-Watcher EQ6-R Pro (GS Server) ✅ | `ASCOM.GS.Sky.Telescope` | German Polar (GEM) | Topocentric | yes | yes | yes | yes | yes | yes |
 | Alpaca Telescope Simulator | `ASCOM.Simulator.Telescope` | German Polar (GEM) | Topocentric | yes | yes | yes | yes | yes | yes |
 | iOptron CEM/GEM/HEM/HAE/HAZ/SkyHunter | `ASCOM.iOptron2017.Telescope` | German Polar (GEM) | Topocentric | no ⚠️ | yes | yes | yes | yes | yes |
 | ZWO AM3/AM5/AM7 | `ASCOM.ASIMount.Telescope` | German Polar (GEM) | Topocentric | yes | yes | yes | yes | yes | yes |
 <!-- rows appended by Dump-AscomCapabilities.ps1 go below this line -->
 
 Legend: `yes` / `no` / `n/i` (property not implemented by the driver).
+✅ = dumped with real hardware connected. ⚠️ = dumped idle, provisional.
 
 ## Per-mount notes
 
@@ -55,8 +57,28 @@ matrix can't express — whether `FindHome()` blocks or returns
 immediately, what "home" physically means, whether `SideOfPier` is
 meaningful, how `Sync` behaves, and any driver quirks.
 
-### Sky-Watcher EQ6-R Pro — GS Server (`ASCOM.GS.Sky.Telescope`)
+### Sky-Watcher EQ6-R Pro — GS Server (`ASCOM.GS.Sky.Telescope`) ✅
 
+- **Dumped 2026-07-27 with the mount connected** — driver v1.2.2.4,
+  interface version 4. Real site and sidereal time reported, `AtHome` =
+  True from the previous night's run, `SideOfPier` = pierEast. This is
+  the reference row: everything the script needs is supported.
+- ⚠️ **`Connected` state appears to be SHARED across ASCOM clients, not
+  per-client.** This was initially recorded the other way round, on the
+  strength of this single dump, and that was wrong. Two full script runs
+  later the same day settled it: run 1 took 8 s to connect and released
+  its handle; run 2, with N.I.N.A. connected, found `Connected` already
+  true and skipped connecting entirely. A per-client model would have
+  had run 2 connect afresh. The likely explanation for this dump needing
+  to connect is that the hardware link was simply down at the time.
+  **Consequence:** `PHD2_GuidingAssistant.ps1` no longer sets
+  `Connected = false` at all, since doing so could drop N.I.N.A.'s link
+  mid-sequence.
+- `CanSetRightAscensionRate` and `CanSetDeclinationRate` both True,
+  unlike the iOptron and ZWO drivers.
+- Tracking rates: sidereal, king, lunar, solar — returned as raw enum
+  integers rather than names, unlike the ASCOM simulator.
+- Axis rates: continuous 0–3.5 deg/sec on both axes.
 - Verified working with `PHD2_GuidingAssistant.ps1`, 2026-07-26.
 - `FindHome()` returns immediately and must be polled via `AtHome` and
   `Slewing`; homing took ~28 s in practice.

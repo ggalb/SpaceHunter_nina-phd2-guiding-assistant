@@ -78,7 +78,10 @@ param(
 
     # ---- Behaviour ---------------------------------------------------
     [switch] $Simulate,                      # skip all mount movement
-    [string] $LogDir               = $PSScriptRoot
+
+    # Where to write the run log. Defaults to a 'logs' subfolder beside
+    # the script, created if it does not exist.
+    [string] $LogDir               = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,11 +99,14 @@ Set-StrictMode -Version 1.0
 # previously left us with no log at all - which made a failure
 # undiagnosable. So: try the script folder, prove it is writable, and
 # fall back to TEMP if not.
-if ([string]::IsNullOrWhiteSpace($LogDir)) { $LogDir = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($LogDir)) {
-    try { $LogDir = Split-Path -Parent $MyInvocation.MyCommand.Definition } catch { }
+    $scriptDir = $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($scriptDir)) {
+        try { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
+    $LogDir = Join-Path $scriptDir 'logs'
 }
-if ([string]::IsNullOrWhiteSpace($LogDir)) { $LogDir = (Get-Location).Path }
 
 try {
     if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
@@ -413,13 +419,21 @@ function Mount-Connect {
 }
 
 function Mount-Release {
-    # NOTE: we deliberately do NOT set Connected = $false unless we were
-    # the ones who opened it - N.I.N.A. holds its own connection through
-    # GS Server and must not be dropped.
+    # We never set Connected = $false.
+    #
+    # Evidence from 2026-07-27: GS Server appears to share ONE Connected
+    # state across all ASCOM clients rather than giving each its own. Run
+    # 1 that day took 8s to connect and reported releasing its own
+    # handle; run 2, with N.I.N.A. connected, found Connected already
+    # true and left it alone. If the state is shared, setting it false
+    # would tear down N.I.N.A.'s link mid-sequence.
+    #
+    # Releasing the COM object is sufficient: our client goes away when
+    # the process exits moments later. Leaving the driver connected costs
+    # nothing and removes the only way this script could drop N.I.N.A.
     try {
         if ($script:Mount -and $script:MountWeOpened) {
-            $script:Mount.Connected = $false
-            Write-Log "Released our own mount connection."
+            Write-Log "Leaving the mount connected (we opened it, but the driver state may be shared with N.I.N.A.)."
         }
     } catch { }
     try {

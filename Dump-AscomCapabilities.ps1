@@ -26,6 +26,11 @@
  NOTES
    - READ ONLY. This script never slews, parks, homes or changes
      tracking. It only reads properties. Safe to run on live hardware.
+   - It does NOT disconnect on exit, even if it opened the connection.
+     Hub drivers such as GS Server appear to share one Connected state
+     across all clients, so disconnecting would drop the link for
+     N.I.N.A. too. Pass -Disconnect only if nothing else is using the
+     mount.
    - Most drivers will connect without hardware attached, or offer a
      simulator, so you can profile mounts you do not own.
    - Requires the ASCOM Platform.
@@ -37,7 +42,7 @@ param(
     [string] $ProgId,
     [string] $AppendTo,
     [string] $MountLabel,          # friendly name for the matrix row
-    [switch] $KeepConnected        # leave the driver connected on exit
+    [switch] $Disconnect           # tear the link down on exit (see note below)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,6 +114,23 @@ function Decode-EquatorialSystem {
         3 { 'B1950' }
         default { "unknown ($($Result.Value))" }
     }
+}
+
+# Some drivers return DriveRates as named strings, others as raw enum
+# values. GS Server returns integers; the ASCOM simulator returns names.
+function Decode-DriveRate {
+    param($Value)
+    $n = $null
+    if ([int]::TryParse([string]$Value, [ref]$n)) {
+        switch ($n) {
+            0 { return 'driveSidereal' }
+            1 { return 'driveLunar' }
+            2 { return 'driveSolar' }
+            3 { return 'driveKing' }
+            default { return "unknown ($Value)" }
+        }
+    }
+    return [string]$Value
 }
 
 function Decode-SideOfPier {
@@ -249,7 +271,7 @@ try {
     Write-Host ""
     Write-Host "TRACKING RATES OFFERED"
     try {
-        foreach ($tr in $tel.TrackingRates) { Write-Host "  $tr" }
+        foreach ($tr in $tel.TrackingRates) { Write-Host ("  {0}" -f (Decode-DriveRate $tr)) }
     } catch {
         Write-Host "  <not available: $($_.Exception.Message)>"
     }
@@ -362,10 +384,25 @@ catch {
     if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
 }
 finally {
+    # We do NOT disconnect, even if we were the ones who connected.
+    #
+    # GS Server appears to share a single Connected state across all
+    # ASCOM clients (established 2026-07-27). Disconnecting here would
+    # drop the link for N.I.N.A. too - which is almost certainly what
+    # happened when this tool was run at 16:39 that day, leaving the
+    # next script run to spend 8 seconds re-establishing the connection.
+    #
+    # Pass -Disconnect if you genuinely want the link torn down and you
+    # are certain nothing else is using the mount.
     try {
-        if ($tel -and $weConnected -and -not $KeepConnected) {
-            $tel.Connected = $false
-            Write-Host "Disconnected (we opened the connection, so we closed it)."
+        if ($tel -and $weConnected) {
+            if ($Disconnect) {
+                $tel.Connected = $false
+                Write-Host "Disconnected, as requested by -Disconnect."
+            } else {
+                Write-Host "Leaving the driver connected. Other applications may share this connection."
+                Write-Host "Use -Disconnect if you want it closed."
+            }
         }
     } catch { }
     try {
