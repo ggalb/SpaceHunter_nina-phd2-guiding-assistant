@@ -1,21 +1,47 @@
-# PHD2 Guiding Assistant automation — design notes
+# PHD2 Guiding Assistant automation for N.I.N.A.
 
-Companion to `PHD2_GuidingAssistant.ps1` and `Run_PHD2_GuidingAssistant.bat`.
-Written 26 July 2026 for the AtlasII / RC51 rig.
+Runs PHD2's Guiding Assistant automatically, once per night, as a step in
+an N.I.N.A. sequence. It positions the mount, starts guiding, measures
+the seeing, applies PHD2's recommended min-move values, and sends the
+mount home — with no clicking.
 
-## Rig context
+The Guiding Assistant isn't exposed in PHD2's API, so that part is driven
+through the Windows API. Everything else goes over PHD2's JSON-RPC socket
+and ASCOM.
 
-| Item | Value |
+> **Status:** working and tested end to end against real hardware with
+> PHD2's camera simulator, but **not yet run under real sky.** See
+> [Test status](#test-status).
+
+## Which files do I need?
+
+
+**Just these two.** Put them in the same folder and point N.I.N.A.'s
+*External Script* instruction at the `.bat`:
+
+| File | Purpose |
 |---|---|
-| Mount | Sky-Watcher EQ6-R Pro |
-| Mount driver | GS Server (GSS) v1.2.2.4 Beta, ProgID `ASCOM.GS.Sky.Telescope` |
-| Guiding | PHD2 2.6.14, profile `Atlas2_290MM`, instance 1 → **port 4400** |
-| Imaging | N.I.N.A. 3.2, profile `AtlasII_RC51_2600C` |
-| Guide exposure | 2 s |
-| Guide scope FL | 120 mm |
-| Access | Remote — laptop → mini PC |
+| `PHD2_GuidingAssistant.ps1` | The routine itself |
+| `Run_PHD2_GuidingAssistant.bat` | What N.I.N.A. calls; holds the three settings |
+
+**Optional extras.** Standalone tools — the main routine never calls
+them, and it works fine without them:
+
+| File | When you'd want it |
+|---|---|
+| `TEST_Simulate_PHD2_GuidingAssistant.bat` | Rehearse a run without moving the mount |
+| `Convert-AltAzToDecHA.ps1` | Work out Dec/hour-angle numbers if you think in Alt/Az |
+| `Dump-AscomCapabilities.ps1` | Ask a mount driver what it actually supports |
+| `Run_Dump-AscomCapabilities.bat` | Double-click front end for the above |
+| `HOWTO_Dump_Capabilities.md` | Instructions to send with the dump tool |
+| `ASCOM_Mount_Capabilities.md` | Collected results from different mount drivers |
+
+**Requirements:** Windows, PHD2, the ASCOM Platform and your mount's
+driver. Nothing to install — the scripts use Windows PowerShell 5.1,
+which ships with Windows.
 
 ## What the script does
+
 
 1. Connects to PHD2 (TCP 4400) and to the mount through GSS.
 2. Pre-flight: PHD2 reachable, equipment connected, **calibration exists**.
@@ -27,10 +53,436 @@ Written 26 July 2026 for the AtlasII / RC51 rig.
 6. Verifies the min-move values actually changed, via the API.
 7. `stop_capture`, then `FindHome()`, then exits.
 
-Runs once per night, from `0-RC51 - My Startup`, replacing the
-`Manual Guiding assistant` message box.
+Runs once per night, called from N.I.N.A.'s Advanced Sequencer using the
+**Utility → External Script** instruction.
+
+## Before first use
+
+Put `PHD2_GuidingAssistant.ps1` and `Run_PHD2_GuidingAssistant.bat` in
+the same folder — anywhere you like. Neither file contains a hard-coded
+path: the batch finds the script beside itself, and the script writes its
+logs to a `logs` subfolder it creates. So no editing is needed to install
+them.
+
+> **The one path you must set** is in N.I.N.A.: point the
+> *Utility → External Script* instruction at your copy of
+> `Run_PHD2_GuidingAssistant.bat`. Quote it if the path contains spaces.
+
+Then work through these three steps in order. Run the PowerShell
+commands from the folder containing the scripts.
+
+**1. Check the script parses.** Replace the path with your own — this is
+the only place in this README where you need to:
+
+```powershell
+$e=$null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    'C:\YOUR\PATH\HERE\PHD2_GuidingAssistant.ps1',
+    [ref]$null,[ref]$e); $e
+```
+
+No output means it parsed cleanly. Nothing is run and nothing moves.
+
+**2. Dry run.** Exercises the PHD2 connection and the whole Guiding
+Assistant automation, but skips every mount operation — no connect, no
+slew, no homing:
+
+```powershell
+.\TEST_Simulate_PHD2_GuidingAssistant.bat
+```
+
+For this you want PHD2 on a profile with its **camera simulator**
+(Camera = `Simulator`, Mount = `On-camera`), calibrated once. That gives
+a synthetic star field, so it works in daylight or under cloud.
+
+**3. Full run against simulators.** Same again but with the mount layer
+live, pointed at a simulated mount — either your hub's own simulator mode
+or the ASCOM Telescope Simulator via `-MountProgId`. This is what proves
+the slew and stand-down logic before anything real moves.
+
+Only then let it near the telescope.
+
+## Changing the defaults
+
+
+Three settings live at the top of `Run_PHD2_GuidingAssistant.bat`:
+
+```bat
+set "GASECONDS=130"
+set "TARGETDEC=0"
+set "MERIDIANOFFSET=5"
+```
+
+There are two ways to change them. **Method 1 is easier and is the one
+to use** unless you have a reason not to.
+
+### Method 1 — edit the file (recommended)
+
+1. Open the folder containing `Run_PHD2_GuidingAssistant.bat`.
+2. **Right-click the file → Open with → Notepad.**
+   On Windows 11 you may need *Show more options* first. Do **not**
+   double-click it — that runs it.
+3. Near the top you'll see the `--- SETTINGS ---` block with those three
+   lines.
+4. Change the number, leaving everything else alone. So to sample for
+   four minutes:
+
+   ```bat
+   set "GASECONDS=240"
+   ```
+
+   - Keep the quotation marks
+   - No spaces around the `=`
+   - Decimals are fine for the two angles, e.g. `set "MERIDIANOFFSET=7.5"`
+   - Negative is fine for the offset, e.g. `set "MERIDIANOFFSET=-5"`
+5. **Save** with Ctrl+S and close Notepad.
+6. That's it. The next run — whether from N.I.N.A. or by hand — uses the
+   new values.
+
+**To check it took effect:** the batch prints the three values when it
+starts, and they're recorded in the run log:
+
+```
+GA time 240s, Dec 0, meridian offset 5 deg
+```
+
+**To undo:** put the original numbers back — `130`, `0`, `5`.
+
+### Method 2 — one-line commands
+
+Useful if you'd rather not open the file, or want to script the change.
+Run them in PowerShell **from the folder containing the batch file**:
+
+```powershell
+cd 'C:\path\to\your\scripts'
+```
+
+Then use whichever command below applies. Each one rewrites a single
+line and leaves the rest of the file untouched.
+
+### Guiding Assistant sampling time
+
+```powershell
+# set it to 240 seconds
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "GASECONDS=.*"', 'set "GASECONDS=240"' | Set-Content .\Run_PHD2_GuidingAssistant.bat
+
+# back to the default
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "GASECONDS=.*"', 'set "GASECONDS=130"' | Set-Content .\Run_PHD2_GuidingAssistant.bat
+```
+
+**Must be greater than 120.** PHD2 enforces a two-minute minimum: ask
+for 60 and it opens an "Extended Sampling" window and keeps measuring
+until it reaches 120 anyway. So shorter values save no time — they only
+make the log messier. The script warns if you set one.
+
+**Longer is worth considering.** The min-move recommendations come from
+high-frequency star motion, and 130 s sits barely above PHD2's floor. If
+your recommended values swing noticeably from night to night, 240 or 300
+will steady them. The cost is a few extra minutes, once per session.
+
+### Where the mount points to measure
+
+```powershell
+# example: Dec +10, 8 degrees EAST of the meridian
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "TARGETDEC=.*"',      'set "TARGETDEC=10"'      | Set-Content .\Run_PHD2_GuidingAssistant.bat
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "MERIDIANOFFSET=.*"', 'set "MERIDIANOFFSET=-8"' | Set-Content .\Run_PHD2_GuidingAssistant.bat
+
+# back to the defaults: Dec 0, 5 degrees WEST
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "TARGETDEC=.*"',      'set "TARGETDEC=0"'      | Set-Content .\Run_PHD2_GuidingAssistant.bat
+(Get-Content .\Run_PHD2_GuidingAssistant.bat) -replace '^set "MERIDIANOFFSET=.*"', 'set "MERIDIANOFFSET=5"' | Set-Content .\Run_PHD2_GuidingAssistant.bat
+```
+
+**What the numbers mean**
+
+| Setting | Meaning |
+|---|---|
+| `TARGETDEC` | Declination in degrees, −90 to +90. `0` is the celestial equator. |
+| `MERIDIANOFFSET` | Degrees from the meridian. **Positive = west, negative = east.** |
+
+So `5` means five degrees west of the meridian, which on a German
+equatorial puts the telescope on the **east** side of the pier. Use `-5`
+for the mirror image on the west side.
+
+**Why the defaults are what they are.** Declination 0 near the meridian
+is where guiding behaves most simply: RA corrections aren't compressed by
+`cos(dec)`, and the mount is near balance. Those are the conditions PHD2
+recommends for calibration, and measuring the sky under the same
+conditions is what makes the resulting min-move values representative.
+
+**If you change them, keep the changes modest.** Large declinations
+compress the RA axis, and large meridian offsets introduce field rotation
+and differential flexure that muddy the seeing measurement — PHD2's own
+guidance is to stay within about two hours of the meridian. The script
+does not stop you going further; it simply checks you arrived where you
+asked.
+
+The post-slew sanity check reads these same values, so it adapts
+automatically — no need to touch `-PositionToleranceDeg` unless you want
+a tighter or looser tolerance than 3°.
+
+### If you think in Alt/Az
+
+The script takes declination and hour angle, not altitude and azimuth.
+There is no fixed conversion between them: **Dec/HA are fixed relative
+to the sky, Alt/Az are fixed relative to your horizon**, so the same
+Alt/Az corresponds to a different Dec/HA at every latitude. You have to
+convert for *your* site.
+
+Use `Convert-AltAzToDecHA.ps1`:
+
+```powershell
+.\Convert-AltAzToDecHA.ps1 -Alt 46 -Az 90 -Lat 33.798
+```
+
+Azimuth convention: 0 = North, 90 = East, 180 = South, 270 = West.
+Latitude is negative in the southern hemisphere. It prints the two lines
+to paste into the batch file, and warns if the position you've asked for
+is a poor place to measure.
+
+It also works in reverse, to see where your current settings point:
+
+```powershell
+.\Convert-AltAzToDecHA.ps1 -Dec 0 -MeridianOffset 5 -Lat 33.798
+```
+
+Worked example — **Alt 46°, Az 90° (due east)**:
+
+| Your latitude | `TARGETDEC` | `MERIDIANOFFSET` |
+|---|---|---|
+| 33.8° (Creator's site) | 23.59 | −49.29 |
+| 45.0° | 30.57 | −53.79 |
+| 51.5° | 34.26 | −57.19 |
+| −33.9° (southern) | −23.65 | −49.32 |
+
+Note the offset comes out **negative**, because due east is east of the
+meridian. And note how far negative: −49° is **3.3 hours** from the
+meridian, well outside PHD2's recommended two-hour window. That
+particular spot is a poor place to measure — the numbers are correct, but
+the choice isn't a good one.
+
+For reference, the shipped default of Dec 0 / offset +5 sits at roughly
+**Alt 56°, Az 189°** at latitude 33.8° — high up, just west of due
+south. That's the kind of position you want.
+
+**Why the script doesn't take Alt/Az directly:** ASCOM does offer
+`SlewToAltAz`, but not every driver implements it — the ZWO AM series
+reports `CanSlewAltAz = False`, for instance. Converting to Dec/HA works
+on every mount, and keeps the target fixed against the sky rather than
+drifting relative to it during the measurement.
+
+### One-off overrides
+
+To try something without editing anything, call the script directly:
+
+```powershell
+.\PHD2_GuidingAssistant.ps1 -GASeconds 300 -TargetDec 10 -MeridianOffsetDeg -8
+```
+
+Add `-Simulate` to rehearse it with no mount movement at all.
+
+## Exit codes
+
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (possibly with a logged warning) |
+| 10 | PHD2 unreachable / server not enabled |
+| 11 | PHD2 equipment not connected |
+| 12 | PHD2 not calibrated — script refuses to calibrate |
+| 20 | Mount connect failed |
+| 21 | Slew failed or timed out |
+| 22 | Post-slew position sanity check failed |
+| 23 | Mount reports an invalid sidereal time or site location |
+| 24 | Driver lacks a capability the script requires |
+| 30 | No guide star found |
+| 31 | Guiding failed to settle |
+| 40 | GA window did not appear |
+| 41 | GA `Start` button never enabled |
+| 42 | Star lost / PHD2 error alert during the GA run |
+| 43 | No `Apply` buttons offered |
+| 44 | Min-move values unchanged after Apply |
+| 50 | Stand-down (`FindHome` / `Park`) failed or timed out |
+| 99 | Unexpected error |
+
+A non-zero exit fails the N.I.N.A. instruction and will fire the
+`Failures to Pushover` global trigger (Emergency / Siren). The script
+always attempts `stop_capture` + `FindHome()` before exiting, so the rig
+is left safe. A timestamped log is written beside the script.
+
+## Test status
+
+
+| Stage | What | Result |
+|---|---|---|
+| 1 | Parse check | Pass |
+| 2 | `-Simulate`, PHD2 Simulator profile, 130 s | **Pass — exit 0**, 2026-07-26 |
+| 3 | Real mount slew + FindHome | **Pass** (accidental full run, 2026-07-26 15:51) — reached Dec 0.00, HA 5.03° W, SideOfPier=0, homed cleanly |
+| 4 | Launched from N.I.N.A., real mount, PHD2 simulator | **Pass — exit 0**, 2026-07-26 21:18, 4m00s end to end |
+| 5 | Regression after the capability rewrite, real mount | **Pass — exit 0**, 2026-07-27, three consecutive runs |
+| 6 | Failure paths | **Pass**, 2026-07-27 — see below |
+| 7 | Full run on the real rig under real sky | Not yet done |
+
+### Failure paths verified 2026-07-27
+
+| Guard | How it was provoked | Result |
+|---|---|---|
+| Exit 10 | `Tools > Enable Server` unchecked in PHD2 | Failed in 2 s with a clear message |
+| Exit 12 | Calibration cleared (needs `Auto restore calibration` off first, or PHD2 restores it) | Refused to run, refused to calibrate |
+| Exit 44 no longer spurious | Two runs producing identical recommendations | Warned and continued, exit 0 |
+| Extended Sampling | Stop clicked at 30 s, below PHD2's 2-minute minimum | Waited 90 s for the countdown window, then applied |
+
+Note: with `Auto restore calibration` enabled — which it is on this rig —
+PHD2 restores the last calibration on reconnect, so exit 12 is unlikely
+ever to fire in practice. That is the desired outcome; the guard exists
+for the case where calibration genuinely is absent.
+
+Stage 2 verified end to end: menu → window → backlash unchecked →
+auto-start detected → 130 s run → Stop → 2 Apply buttons clicked →
+min-move confirmed changed via the API (RA 0.18 → 0.0975,
+Dec 0.18 → 0.15) → capture stopped → exit 0.
+
+## Moving from simulators to the real sky
+
+- **Switch PHD2 back to your real equipment profile**, and undo anything
+  you loosened for simulator testing — `Search region` and
+  `Minimum star HFD` are the usual two
+- **Confirm `Tools > Enable Server` is checked** in PHD2, and that PHD2's
+  equipment is connected
+- **Have the mount connected in N.I.N.A. before this instruction runs.**
+  In a normal sequence that happens at sunset, several steps earlier
+- **Point the External Script instruction at
+  `Run_PHD2_GuidingAssistant.bat`**, not the TEST batch — the TEST one
+  ends with a `pause`, which N.I.N.A. can never satisfy, so the
+  instruction would hang forever
+- **Expect about six minutes:** two slews, guiding settle, the GA
+  sampling time, applying recommendations, then stand-down
+
+Worth considering for your own profile: `Minimum star SNR for AutoFind`
+defaults to 6, which is permissive for a star whose measurements will set
+your guiding parameters for the night. PHD2's own guidance for the
+Guiding Assistant is a star with SNR of 10 or better.
+
+## Known risks
+
+
+1. **Opening GA from the Tools menu.** The first version used UIA for this
+   and failed with exit 40 on the very first run: Windows menus are
+   `HMENU` objects, not child windows, so a UIA descendants search from
+   the main window never reaches them. Now handled by walking the native
+   `HMENU`, reading the command ID for "Guiding Assistant...", and posting
+   `WM_COMMAND` — the same thing a mouse click does. UIA and `SendKeys`
+   remain as fallbacks 2 and 3. On failure the log prints every menu
+   caption it saw.
+2. **Disconnected RDP sessions have no rendered desktop**, and UIA may fail.
+   Stay connected to the mini PC for the ~6 minutes this runs. (In the
+   normal workflow you are, since you have just finished TPPA by hand.)
+3. **Exit 44 when values legitimately don't change.** This bit us twice on
+   2026-07-26: two consecutive runs against the deterministic simulator
+   produced identical recommendations, so the min-move values were
+   unchanged and the script wrongly concluded the Apply clicks had
+   missed. Now resolved by checking whether PHD2 *disabled* the Apply
+   buttons — its own signal that a recommendation was applied — and
+   failing only if the values are unchanged AND the buttons are still
+   live.
+4. Coordinates are computed as topocentric-of-date from `SiderealTime`. If
+   the driver reports J2000 there is a ~0.4° precession discrepancy —
+   irrelevant at a 5° offset.
+
+## Portability
+
+
+Developed against one setup — EQ6-R Pro via GS Server, PHD2 2.6.14 with
+an English UI, N.I.N.A. 3.2, Windows 11 — but nothing is tied to a
+particular PHD2 *profile*, and the mount driver is a parameter
+(`-MountProgId`), so EQMOD (`EQMOD.Telescope`), iOptron
+(`ASCOM.iOptron2017.Telescope`), ZWO (`ASCOM.ASIMount.Telescope`) or any
+other ASCOM driver can be passed in.
+
+### Done (2026-07-27)
+
+- **Capabilities are read at runtime**, after connecting to the actual
+  mount, and logged. See the warning in
+  `ASCOM_Mount_Capabilities.md`: flags are *not* static per driver, so a
+  lookup table would be wrong.
+- **`-EndAction`** accepts `Auto` (default), `Home`, `Park` or `None`.
+  `Auto` prefers `FindHome()`, falls back to `Park()`, and warns if the
+  driver supports neither.
+- **Slew falls back** to the blocking `SlewToCoordinates()` when
+  `CanSlewAsync` is false.
+- **Unpark and tracking are checked** against `CanUnpark` and
+  `CanSetTracking`, failing early with exit 24 rather than throwing.
+- **Site and sidereal time are validated before any movement** (exit 23).
+  Prompted by the ZWO driver reporting `SiderealTime = -1` and the
+  iOptron reporting site 0,0 while idle — either would have produced a
+  meaningless target and slewed the mount to it.
+- **`SideOfPier` is only used when meaningful**; `pierUnknown` degrades
+  the post-slew check to declination and hour angle only.
+
+### Still open
+
+1. **English-language PHD2 assumed.** The window title
+   `Guiding Assistant`, the menu caption, and the captions `Start`,
+   `Stop`, `Apply` and `Measure Declination Backlash` are matched as
+   literal English strings. A localised PHD2 fails at exit 40. Could be
+   lifted into parameters.
+2. **GEM assumed** in the positioning logic. Alt-az mounts now get a
+   warning, but "Dec 0, 5° west of the meridian" still isn't meaningful
+   for them.
+3. **Guide star SNR is not checked** after settling. A marginal star
+   means 130 s of measurement producing recommendations from a star that
+   keeps dropping out. Aborting early would be better.
+4. **`MaxStarLost = 8`** during the GA run is a guess, never calibrated
+   against real sky.
+
+Southern hemisphere is *not* a concern: approaching from the south and
+finishing northward is correct in both, and a GEM pointing west of the
+meridian sits on the east side of the pier either way.
+
+## PHD2 settings that matter
+
+In PHD2's Brain, on the **Guiding** tab:
+
+| Setting | Needs to be | Why |
+|---|---|---|
+| `Clear mount calibration` | **unchecked** | Required. If set, PHD2 discards calibration on connect and the script aborts with exit 12 every run. |
+| `Auto restore calibration` | checked | Recommended. Restores calibration on reconnect, so the script finds what it needs. Note this also means clearing calibration by hand won't stick. |
+| `Use Dec compensation` | checked | Optional but useful. Needs a mount or aux-mount connection so PHD2 knows the declination. |
+| `Stop guiding when mount slews` | either | Harmless — the script always slews before it starts guiding. |
+
+**Give PHD2 pointing information if you can**, by setting the *Aux Mount*
+to your ASCOM mount driver. `Pier Side` and `Declination` then appear in
+the Guide Stats panel, PHD2 can scale RA corrections for declination, and
+it can flip calibration data itself when the pier side changes.
+
+
+---
+
+# Design notes and development history
+
+Everything above is what you need to *use* this. What follows is why it
+is built the way it is, and what went wrong along the way - useful if
+you are modifying it, debugging it, or wondering why an obvious-looking
+approach was not taken.
+
+## Rig it was developed on
+
+For reference, the setup all of this was written and tested against. The
+PHD2 settings on that rig were: calibration step 900 ms, guide scope focal
+length 120 mm, search region 15 px, minimum star HFD 1.5 px.
+
+
+| Item | Value |
+|---|---|
+| Mount | Orion Atlas II EQ-G or Sky-Watcher EQ6-R Pro |
+| Mount driver | GS Server (GSS) v1.2.2.4 Beta, ProgID `ASCOM.GS.Sky.Telescope` |
+| Guiding | PHD2 2.6.14, profile `Atlas2_290MM`, instance 1 → **port 4400** |
+| Imaging | N.I.N.A. 3.2, profile `AtlasII_RC51_2600C` |
+| Guide exposure | 2 s |
+| Guide scope FL | 120 mm |
+| Access | Remote — laptop → mini PC |
 
 ## Key design decisions and why
+
 
 **Why UI Automation for the Guiding Assistant.**
 PHD2's RPC API has no Guiding Assistant method — the full method list
@@ -91,46 +543,8 @@ beats a hand-built sync model. A bad sync point degrades every later slew.
 If better blind-slew accuracy is ever wanted, one `Solve and sync` after the
 last TPPA round is the proportionate answer.
 
-## Verified PHD2 settings (Advanced Settings → Guiding)
-
-- `Clear mount calibration` — **unchecked** ✔ (required)
-- `Auto restore calibration` — checked ✔
-- `Use Dec compensation` — checked (needs mount pointing info)
-- `Stop guiding when mount slews` — checked (harmless; script slews before guiding)
-- Calibration step 900 ms, focal length 120 mm, search region 15 px
-
-PHD2 reports `Pier Side` and `Declination` in Guide Stats, confirming a
-working mount/aux-mount connection.
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Success (possibly with a logged warning) |
-| 10 | PHD2 unreachable / server not enabled |
-| 11 | PHD2 equipment not connected |
-| 12 | PHD2 not calibrated — script refuses to calibrate |
-| 20 | Mount connect failed |
-| 21 | Slew failed or timed out |
-| 22 | Post-slew position sanity check failed |
-| 23 | Mount reports an invalid sidereal time or site location |
-| 24 | Driver lacks a capability the script requires |
-| 30 | No guide star found |
-| 31 | Guiding failed to settle |
-| 40 | GA window did not appear |
-| 41 | GA `Start` button never enabled |
-| 42 | Star lost / PHD2 error alert during the GA run |
-| 43 | No `Apply` buttons offered |
-| 44 | Min-move values unchanged after Apply |
-| 50 | Stand-down (`FindHome` / `Park`) failed or timed out |
-| 99 | Unexpected error |
-
-A non-zero exit fails the N.I.N.A. instruction and will fire the
-`Failures to Pushover` global trigger (Emergency / Siren). The script
-always attempts `stop_capture` + `FindHome()` before exiting, so the rig
-is left safe. A timestamped log is written beside the script.
-
 ## Why the GA dialog is driven with raw Win32, not UI Automation
+
 
 The first three versions used UIA and failed three different ways. What
 we learned, in order:
@@ -156,6 +570,7 @@ fails, which is what made each of these diagnosable in one run.
 
 ## Two behaviours of PHD2 worth knowing
 
+
 **GA auto-starts.** If guiding is already active when the dialog opens —
 which it always is here — PHD2 begins measuring immediately and the
 `Start` button is *disabled*. Waiting for `Start` to become enabled hangs
@@ -170,6 +585,7 @@ disappear before looking for results.
 
 ## A trap: '*Backlash*' matches two controls
 
+
 The dialog contains both `Show Backlash Graph` (a pushbutton) and
 `Measure Declination Backlash` (the checkbox), and the pushbutton comes
 first in enumeration order. Matching `'*Backlash*'` returned the
@@ -179,151 +595,28 @@ box as unchecked while it was visibly ticked. The pattern must be
 
 ## GA duration floor — 120 s
 
+
 PHD2 will not populate the Recommendations panel unless the baseline
 sampling ran for **at least 120 seconds**. Below that the run completes
 normally but offers no Apply buttons, which this script reports as
 exit 43. `-GASeconds` must therefore stay above 120; the production
 value is 130. The script logs a warning if it is set lower.
 
-## Known risks
-
-1. **Opening GA from the Tools menu.** The first version used UIA for this
-   and failed with exit 40 on the very first run: Windows menus are
-   `HMENU` objects, not child windows, so a UIA descendants search from
-   the main window never reaches them. Now handled by walking the native
-   `HMENU`, reading the command ID for "Guiding Assistant...", and posting
-   `WM_COMMAND` — the same thing a mouse click does. UIA and `SendKeys`
-   remain as fallbacks 2 and 3. On failure the log prints every menu
-   caption it saw.
-2. **Disconnected RDP sessions have no rendered desktop**, and UIA may fail.
-   Stay connected to the mini PC for the ~6 minutes this runs. (In the
-   normal workflow you are, since you have just finished TPPA by hand.)
-3. **Exit 44 when values legitimately don't change.** This bit us twice on
-   2026-07-26: two consecutive runs against the deterministic simulator
-   produced identical recommendations, so the min-move values were
-   unchanged and the script wrongly concluded the Apply clicks had
-   missed. Now resolved by checking whether PHD2 *disabled* the Apply
-   buttons — its own signal that a recommendation was applied — and
-   failing only if the values are unchanged AND the buttons are still
-   live.
-4. Coordinates are computed as topocentric-of-date from `SiderealTime`. If
-   the driver reports J2000 there is a ~0.4° precession discrepancy —
-   irrelevant at a 5° offset.
-
-## Test status
-
-| Stage | What | Result |
-|---|---|---|
-| 1 | Parse check | Pass |
-| 2 | `-Simulate`, PHD2 Simulator profile, 130 s | **Pass — exit 0**, 2026-07-26 |
-| 3 | Real mount slew + FindHome | **Pass** (accidental full run, 2026-07-26 15:51) — reached Dec 0.00, HA 5.03° W, SideOfPier=0, homed cleanly |
-| 4 | Launched from N.I.N.A., real mount, PHD2 simulator | **Pass — exit 0**, 2026-07-26 21:18, 4m00s end to end |
-| 5 | Regression after the capability rewrite, real mount | **Pass — exit 0**, 2026-07-27, three consecutive runs |
-| 6 | Failure paths | **Pass**, 2026-07-27 — see below |
-| 7 | Full run on the real rig under real sky | Not yet done |
-
-### Failure paths verified 2026-07-27
-
-| Guard | How it was provoked | Result |
-|---|---|---|
-| Exit 10 | `Tools > Enable Server` unchecked in PHD2 | Failed in 2 s with a clear message |
-| Exit 12 | Calibration cleared (needs `Auto restore calibration` off first, or PHD2 restores it) | Refused to run, refused to calibrate |
-| Exit 44 no longer spurious | Two runs producing identical recommendations | Warned and continued, exit 0 |
-| Extended Sampling | Stop clicked at 30 s, below PHD2's 2-minute minimum | Waited 90 s for the countdown window, then applied |
-
-Note: with `Auto restore calibration` enabled — which it is on this rig —
-PHD2 restores the last calibration on reconnect, so exit 12 is unlikely
-ever to fire in practice. That is the desired outcome; the guard exists
-for the case where calibration genuinely is absent.
-
-Stage 2 verified end to end: menu → window → backlash unchecked →
-auto-start detected → 130 s run → Stop → 2 Apply buttons clicked →
-min-move confirmed changed via the API (RA 0.18 → 0.0975,
-Dec 0.18 → 0.15) → capture stopped → exit 0.
-
-## Before the first real-sky run
-
-- Switch PHD2 back to the `Atlas2_290MM` profile
-- Restore `Search region` to 15 px if it was raised for simulator testing
-- Confirm the mount is connected and `Tools > Enable Server` is checked
-- Point the N.I.N.A. External Script instruction at
-  `Run_PHD2_GuidingAssistant.bat` (not the TEST batch)
-- Expect ~6 minutes: slew, settle, 130 s GA, apply, home
-
-## Before first use
-
-```powershell
-# 1. Parse check
-$e=$null
-[void][System.Management.Automation.Language.Parser]::ParseFile(
-    'C:\Users\ggalb\Documents\COWORK\NINA Support Scripts\PHD2_GuidingAssistant.ps1',
-    [ref]$null,[ref]$e); $e
-
-# 2. Dry run — exercises PHD2 + GA automation, moves nothing
-.\PHD2_GuidingAssistant.ps1 -Simulate
-```
-
-Then a full run against the PHD2 camera simulator and the GSS mount
-simulator before trusting it on the real rig.
-
-## Portability
-
-Developed against one setup — EQ6-R Pro via GS Server, PHD2 2.6.14 with
-an English UI, N.I.N.A. 3.2, Windows 11 — but nothing is tied to a
-particular PHD2 *profile*, and the mount driver is a parameter
-(`-MountProgId`), so EQMOD (`EQMOD.Telescope`), iOptron
-(`ASCOM.iOptron2017.Telescope`), ZWO (`ASCOM.ASIMount.Telescope`) or any
-other ASCOM driver can be passed in.
-
-### Done (2026-07-27)
-
-- **Capabilities are read at runtime**, after connecting to the actual
-  mount, and logged. See the warning in
-  `ASCOM_Mount_Capabilities.md`: flags are *not* static per driver, so a
-  lookup table would be wrong.
-- **`-EndAction`** accepts `Auto` (default), `Home`, `Park` or `None`.
-  `Auto` prefers `FindHome()`, falls back to `Park()`, and warns if the
-  driver supports neither.
-- **Slew falls back** to the blocking `SlewToCoordinates()` when
-  `CanSlewAsync` is false.
-- **Unpark and tracking are checked** against `CanUnpark` and
-  `CanSetTracking`, failing early with exit 24 rather than throwing.
-- **Site and sidereal time are validated before any movement** (exit 23).
-  Prompted by the ZWO driver reporting `SiderealTime = -1` and the
-  iOptron reporting site 0,0 while idle — either would have produced a
-  meaningless target and slewed the mount to it.
-- **`SideOfPier` is only used when meaningful**; `pierUnknown` degrades
-  the post-slew check to declination and hour angle only.
-
-### Still open
-
-1. **English-language PHD2 assumed.** The window title
-   `Guiding Assistant`, the menu caption, and the captions `Start`,
-   `Stop`, `Apply` and `Measure Declination Backlash` are matched as
-   literal English strings. A localised PHD2 fails at exit 40. Could be
-   lifted into parameters.
-2. **GEM assumed** in the positioning logic. Alt-az mounts now get a
-   warning, but "Dec 0, 5° west of the meridian" still isn't meaningful
-   for them.
-3. **Guide star SNR is not checked** after settling. A marginal star
-   means 130 s of measurement producing recommendations from a star that
-   keeps dropping out. Aborting early would be better.
-4. **`MaxStarLost = 8`** during the GA run is a guess, never calibrated
-   against real sky.
-
-Southern hemisphere is *not* a concern: approaching from the south and
-finishing northward is correct in both, and a GEM pointing west of the
-meridian sits on the east side of the pier either way.
-
 ## Licence
 
-MIT — see [LICENSE](LICENSE). Provided as-is, with no warranty. This
-script commands a telescope mount; test it against simulators before
-letting it near your equipment.
+
+MIT — see [LICENSE](LICENSE). Copyright © 2026 Georg G Albrecht.
+
+Provided as-is, with no warranty. **This script commands a telescope
+mount.** Test it against simulators, as described in
+[Before first use](#before-first-use), before letting it near your
+equipment.
 
 ## Sources
+
 
 - [PHD2 server API (EventMonitoring wiki)](https://github.com/OpenPHDGuiding/phd2/wiki/EventMonitoring)
 - [PHD2 Tools — Calibration Assistant & Guiding Assistant](https://openphdguiding.org/man-dev/Tools.htm)
 - [Green Swamp Software (GSS)](https://greenswamp.org/)
 - [GSServer on GitHub](https://github.com/rmorgan001/GSServer)
+

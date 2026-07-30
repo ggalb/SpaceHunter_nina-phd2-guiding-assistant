@@ -6,23 +6,38 @@ REM
 REM  Place this file and PHD2_GuidingAssistant.ps1 in the SAME folder,
 REM  then point the N.I.N.A. External Script instruction at this .bat.
 REM
+REM  ------------------------------------------------------------------
+REM   SETTINGS - edit the three values below to change behaviour.
+REM   See "Changing the defaults" in README.md for what they mean and
+REM   for one-line commands that edit them for you.
+REM  ------------------------------------------------------------------
+REM
 REM  The PowerShell exit code is passed straight back to N.I.N.A., so a
 REM  non-zero exit fails the sequence instruction (and will fire the
 REM  "Failures to Pushover" global trigger).
 REM
 REM  OUTPUT
-REM    - Progress prints to the console window N.I.N.A. opens, so you
-REM      can watch a run happen.
-REM    - The full run record is the script's own log, written to
-REM      logs\PHD2_GA_<timestamp>.log. Every line shown on screen is in
-REM      there too.
-REM    - Only stderr is captured to logs\stderr.txt, as a safety net for
-REM      a catastrophic failure that kills the script before its log
-REM      exists - the console window closes too fast to read in that
-REM      case.
+REM    - Progress prints to the console window N.I.N.A. opens.
+REM    - The full run record is logs\PHD2_GA_<timestamp>.log.
+REM    - Only stderr goes to logs\stderr.txt, as a safety net for a
+REM      failure that kills the script before its own log exists.
 REM ===================================================================
 
 setlocal
+
+REM --- SETTINGS ------------------------------------------------------
+
+REM Guiding Assistant sampling time, seconds. Must be > 120: PHD2
+REM enforces a two-minute minimum and will top up shorter runs itself.
+set "GASECONDS=130"
+
+REM Target declination in degrees. 0 = celestial equator (recommended).
+set "TARGETDEC=0"
+
+REM Degrees from the meridian. POSITIVE = west, NEGATIVE = east.
+set "MERIDIANOFFSET=5"
+
+REM --- end of settings ----------------------------------------------
 
 set "SCRIPT=%~dp0PHD2_GuidingAssistant.ps1"
 set "LOGDIR=%~dp0logs"
@@ -32,9 +47,10 @@ if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 
 echo.
 echo  Starting PHD2 Guiding Assistant routine - %DATE% %TIME%
+echo   GA time %GASECONDS%s, Dec %TARGETDEC%, meridian offset %MERIDIANOFFSET% deg
 echo.
 
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds 130 2>>"%ERRLOG%"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds %GASECONDS% -TargetDec %TARGETDEC% -MeridianOffsetDeg %MERIDIANOFFSET% 2>>"%ERRLOG%"
 
 set RC=%ERRORLEVEL%
 
