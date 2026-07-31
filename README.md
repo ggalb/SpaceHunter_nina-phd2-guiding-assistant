@@ -14,9 +14,15 @@ The Guiding Assistant isn't exposed in PHD2's API, so that part is driven
 through the Windows API. Everything else goes over PHD2's JSON-RPC socket
 and ASCOM.
 
-> **Status:** working. Run successfully under real sky on 30 July 2026 —
-> real mount, real guide camera, launched from N.I.N.A., completed in
-> under four minutes with no warnings. See [Test status](#test-status).
+> **Status:** working, and suitable for unattended use.
+>
+> Run under real sky on 30 July 2026 — real mount, real guide camera,
+> launched from N.I.N.A., finished in under four minutes with no
+> warnings. Verified again on 31 July with the desktop session
+> **disconnected** throughout, confirming it needs no one watching and no
+> rendered display. Failure guards individually provoked and confirmed.
+> See [Test status](#test-status) and
+> [Running fully unattended](#running-fully-unattended).
 
 ## Which files do I need?
 
@@ -356,6 +362,7 @@ is left safe. A timestamped log is written beside the script.
 | 5 | Regression after the capability rewrite, real mount | **Pass — exit 0**, 2026-07-27, three consecutive runs |
 | 6 | Failure paths | **Pass**, 2026-07-27 — see below |
 | 7 | **Full run under real sky** | **Pass — exit 0**, 2026-07-30 21:01, 3m56s |
+| 8 | **Run with the desktop session disconnected** | **Pass — exit 0**, 2026-07-31 11:47 |
 
 ### Real-sky run, 2026-07-30
 
@@ -373,6 +380,16 @@ guide camera. Slewed to Dec 0.00 / HA 5.03° west, `SideOfPier` reported
 Declination Backlash` was found ticked on the live profile and was
 unticked by the script, so the session ended when asked rather than
 continuing into a backlash measurement.
+
+### Disconnected-session run, 2026-07-31
+
+Started over RDP with a two-minute delay, the RDP client closed before
+the script began, and left alone for eight minutes. The run took 2m43s
+and completed with exit 0 — menu invoked, dialog found, backlash box
+unchecked, 130 s measured, both recommendations applied.
+
+An earlier attempt was discarded because the session was briefly
+reconnected mid-run, which would have invalidated the result.
 
 ### Failure paths verified 2026-07-27
 
@@ -413,6 +430,49 @@ Worth considering for your own profile: `Minimum star SNR for AutoFind`
 defaults to 6, which is permissive for a star whose measurements will set
 your guiding parameters for the night. PHD2's own guidance for the
 Guiding Assistant is a star with SNR of 10 or better.
+
+## Running fully unattended
+
+If your rig lives in an observatory and nobody is present — N.I.N.A.
+looping, no polar alignment step, no human until something breaks —
+this works. It has been tested.
+
+### The software side is proven
+
+The Guiding Assistant automation needs **no rendered display**. It is
+almost entirely Windows messages (`FindWindow`, `PostMessage`,
+`BM_CLICK`), which address windows by handle and caption rather than by
+screen position.
+
+**Verified 2026-07-31:** a complete run finished with exit 0 with the RDP
+client closed for the whole duration — including the single remaining UI
+Automation call, which finds the PHD2 main window. A *disconnected*
+session is the harsher case; a **locked** console session, which is what
+an unattended observatory actually runs, is comfortably safer.
+
+The one part that would need a live input desktop is the `SendKeys`
+fallback for opening the Tools menu. It is the third fallback and only
+runs if the Win32 and UIA paths have both already failed.
+
+### The environment side is yours
+
+None of this is the script's business, but an unattended machine needs
+it:
+
+| Setting | Why |
+|---|---|
+| **Auto-logon at boot** | An unexpected reboot restores the desktop session with nobody present. Without it, nothing runs at all. |
+| **A console-attached viewer** — VNC, AnyDesk, NoMachine | These *view* the existing session. Closing the viewer changes nothing. |
+| **Don't mix RDP with the above** | Windows client editions allow one session. RDP moves the desktop off the console; disconnecting leaves it detached, and your VNC server then has nothing to show. Pick one method. |
+| **Disable display sleep, hibernate and Windows Update auto-restart** | Obvious, routinely forgotten. |
+| **Failure notifications** | With nobody watching, the exit code must reach a human. N.I.N.A. can push on instruction failure. |
+
+### If it ever does fail unattended
+
+It fails **safely**, not silently: the mount is sent home, the N.I.N.A.
+instruction fails, and your notification fires. The worst outcome is a
+night imaged on the previous session's min-move values — which is
+exactly where you would be without this script at all.
 
 ## Keeping it working when software updates
 
@@ -468,9 +528,11 @@ you immediately whether an upgrade is implicated.
    `WM_COMMAND` — the same thing a mouse click does. UIA and `SendKeys`
    remain as fallbacks 2 and 3. On failure the log prints every menu
    caption it saw.
-2. **Disconnected RDP sessions have no rendered desktop**, and UIA may fail.
-   Stay connected to the mini PC for the ~6 minutes this runs. (In the
-   normal workflow you are, since you have just finished TPPA by hand.)
+2. ~~**Disconnected RDP sessions may break the automation.**~~ **Tested
+   and disproved, 2026-07-31** — see
+   [Running fully unattended](#running-fully-unattended). A complete run
+   finished with exit 0 while the RDP client was closed throughout. The
+   warning that used to sit here was precautionary and untested.
 3. **Exit 44 when values legitimately don't change.** This bit us twice on
    2026-07-26: two consecutive runs against the deterministic simulator
    produced identical recommendations, so the min-move values were

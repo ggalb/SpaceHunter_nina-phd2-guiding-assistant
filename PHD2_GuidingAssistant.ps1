@@ -37,13 +37,27 @@
  Author  : Written for Georg's AtlasII / RC51 rig (EQ6-R + GSS + PHD2
            2.6.14 + N.I.N.A. 3.2)
 
- IMPORTANT: The Guiding Assistant is not exposed in PHD2's RPC API,
-           so that portion is driven through Windows UI Automation.
-           UIA addresses controls through the accessibility tree by
-           name, not by screen coordinates, so display scaling and
-           DPI are irrelevant. However a *disconnected* RDP session
-           has no rendered desktop and UIA may fail - stay connected
-           to the mini PC while this runs.
+ IMPORTANT: The Guiding Assistant is not exposed in PHD2's RPC API, so
+           that portion is driven through the Windows API - almost
+           entirely window messages (FindWindow, PostMessage, BM_CLICK
+           and friends), which address controls by name and handle
+           rather than by screen position. Display scaling and DPI are
+           therefore irrelevant.
+
+           UNATTENDED OPERATION: tested and working with the desktop
+           session DISCONNECTED. On 2026-07-31 a full run completed
+           with exit 0 while the RDP client was closed for the entire
+           duration - including the one remaining UI Automation call,
+           which locates the PHD2 main window. Nothing here needs a
+           rendered display, so a locked or headless console session
+           is fine too. An earlier version of this comment warned
+           otherwise; that warning was precautionary and untested, and
+           it was wrong.
+
+           The one exception is the SendKeys fallback for opening the
+           Tools menu, which does need an input desktop. It is the
+           third fallback and only runs if the Win32 and UIA paths have
+           both already failed.
 
  EXIT CODES
    0   Success (or success with a warning logged)
