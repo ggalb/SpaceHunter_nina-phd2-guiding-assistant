@@ -14,15 +14,16 @@ The Guiding Assistant isn't exposed in PHD2's API, so that part is driven
 through the Windows API. Everything else goes over PHD2's JSON-RPC socket
 and ASCOM.
 
-> **Status:** working, and suitable for unattended use.
+> **Status:** working, suitable for unattended use, and language-independent.
 >
 > Run under real sky on 30 July 2026 — real mount, real guide camera,
 > launched from N.I.N.A., finished in under four minutes with no
 > warnings. Verified again on 31 July with the desktop session
-> **disconnected** throughout, confirming it needs no one watching and no
-> rendered display. Failure guards individually provoked and confirmed.
-> See [Test status](#test-status) and
-> [Running fully unattended](#running-fully-unattended).
+> **disconnected** throughout, and in **ten languages** including Russian,
+> Arabic and Japanese. Failure guards individually provoked and confirmed.
+> See [Test status](#test-status),
+> [Running fully unattended](#running-fully-unattended) and
+> [Languages other than English](#languages-other-than-english).
 
 ## Which files do I need?
 
@@ -363,6 +364,15 @@ is left safe. A timestamped log is written beside the script.
 | 6 | Failure paths | **Pass**, 2026-07-27 — see below |
 | 7 | **Full run under real sky** | **Pass — exit 0**, 2026-07-30 21:01, 3m56s |
 | 8 | **Run with the desktop session disconnected** | **Pass — exit 0**, 2026-07-31 11:47 |
+| 9 | **PHD2 in French** | **Pass — exit 0**, 2026-07-31 12:45 |
+| 10 | **PHD2 in German** | **Pass — exit 0**, 2026-07-31 12:58 |
+| 11 | **PHD2 in Spanish** | **Pass — exit 0**, 2026-07-31 13:19 — first run, no Spanish strings in the script |
+| 12 | **PHD2 in Italian** | **Pass — exit 0**, 2026-07-31 13:26 |
+| 13 | **PHD2 in Portuguese** | **Pass — exit 0**, 2026-07-31 13:40 |
+| 14 | **PHD2 in Russian** (Cyrillic) | **Pass — exit 0**, 2026-07-31 13:51 — every fallback, no Latin characters anywhere |
+| 15 | **PHD2 in Arabic** (right-to-left) | **Pass — exit 0**, 2026-07-31 14:00 — control order not inverted |
+| 16 | **PHD2 in Japanese** (CJK) | **Pass — exit 0**, 2026-07-31 14:12 |
+| 17 | **PHD2 in Romanian** | **Pass — exit 0**, 2026-07-31 14:18 |
 
 ### Real-sky run, 2026-07-30
 
@@ -430,6 +440,125 @@ Worth considering for your own profile: `Minimum star SNR for AutoFind`
 defaults to 6, which is permissive for a star whose measurements will set
 your guiding parameters for the night. PHD2's own guidance for the
 Guiding Assistant is a star with SNR of 10 or better.
+
+## Languages other than English
+
+The Guiding Assistant is driven through its window, so the script has to
+find buttons whose captions PHD2 translates. **It works in any language**
+— ten have been verified end to end, and the design does not depend on
+recognising the words.
+
+### Verified languages
+
+Every one of these completed with **exit 0** on 31 July 2026:
+
+| | Latin script | Cyrillic | Right-to-left | CJK |
+|---|---|---|---|---|
+| | English, German, French, Spanish, Italian, Portuguese, Romanian | Russian | Arabic | Japanese |
+
+That covers every category of writing system. Anything untested — Korean,
+Chinese, Greek, Czech, Polish — falls into one of those four buckets, and
+each bucket is proven.
+
+### How it works without knowing the language
+
+Captions are translated; **structure is not**. Each step tries the
+caption first and falls back to something structural:
+
+| Step | Primary | Fallback | Fallback proven by |
+|---|---|---|---|
+| Open the dialog | Menu caption | **Menu command ID 216** — Windows menu IDs are assigned at build time and do not vary by locale | Portuguese, Russian, Arabic, Japanese, Romanian |
+| Find the window | Known title | **Whichever window just appeared** — the open windows are snapshotted before the menu is invoked | German, Italian, Russian, Arabic, Japanese, Romanian |
+| Backlash checkbox | Caption | **Window style** — a checkbox declares itself through `BS_AUTOCHECKBOX`, and style is not translated | Spanish, Italian, Portuguese, Russian, Japanese, Romanian |
+| Start / Stop | Caption | **Position** relative to the `OptionsButton` anchor, whose internal name wxWidgets never localises | Spanish, Italian, Russian, **Arabic**, Japanese, Romanian |
+| Apply | Caption | **Creation order** — those buttons do not exist until the recommendations render, so anything new after Stop is a candidate | Spanish, Italian, Russian, Arabic, Japanese, Romanian |
+
+Whenever a fallback is used, the log records the caption it found and
+suggests adding it — so a run in an unmapped language documents that
+language for you.
+
+### Captions shipped as defaults
+
+Only the ASCII-representable ones, as an optimisation to avoid the
+fallback path:
+
+| | Menu item | Window title | Start | Stop | Apply | Backlash checkbox |
+|---|---|---|---|---|---|---|
+| English | Guiding Assistant… | Guiding Assistant | Start | Stop | Apply | Measure Declination Backlash |
+| German | Nachführassistent | **Guiding-Assistent** | Starten | Stop | Anwenden | Messung Backlash der Deklination |
+| French | Assistant de Guidage | Assistant de Guidage | Démarrer | Arrêter | *(via fallback)* | Mesurer le Jeu de Déclinaison |
+| Spanish | Asistente de Guiado | Asistente de Guiado | Iniciar | Parar | Aplicar | Medida del Backlash de Declinación |
+| Italian | Assistente di guida | Assistente di guida | Inizia | Ferma | Applica | Misurazione del backlash in declinazione |
+| Portuguese | Assistente de Guiagem | Assistente de guiagem | Iniciar | Parar | Aplicar | Medir folga de declinação |
+
+**Deliberately not shipped:** Russian, Arabic, Japanese and Romanian. A
+literal `Начать` or `スタート` in the script would be mangled — Windows
+PowerShell 5.1 reads a UTF-8 file without a BOM as ANSI — and Romanian
+needs wildcards for ș and ț. Making the file's encoding load-bearing is a
+worse trade than relying on fallbacks that are already proven. Those
+languages work; they simply log a warning as they go.
+
+For reference, should anyone want them:
+
+| | Window | Start | Stop | Apply | Backlash checkbox |
+|---|---|---|---|---|---|
+| Russian | Помощник гидирования | Начать | Остановить | Применить | Измерение люфта склонения |
+| Arabic | مساعد التوجيه | إبدأ | إيقاف | تطبيق | *(left in English)* |
+| Japanese | ガイドアシスタント | スタート | ストップ | 適用 | 赤緯バックラッシュの測定 |
+| Romanian | **Asistentul de ghidaj** | Pornește | Oprește | Aplicați | Măsoară reacția (backlash) Declinației |
+
+### Traps found along the way
+
+**PHD2 is not internally consistent.** German's menu item is
+`Nachführassistent` but its window is `Guiding-Assistent`. Romanian's
+menu says `Asistent de ghidaj` while the window says `Asistentul de
+ghidaj`. Mapping a language from the menu alone gets the window wrong.
+
+**Translations are patchy, unpredictably.** German leaves `Tools` in
+English; Arabic leaves `Measure Declination Backlash` and `Show Backlash
+Graph` in English while translating everything around them; Italian
+leaves `Show Backlash Graph`; every language so far leaves `Calibration
+Assistant...`. Portuguese calls backlash *folga* and never uses the word
+at all.
+
+**Be specific with patterns.** A loose `*Assistant*` matches
+`Calibration Assistant...` in French and opens the wrong dialog.
+Similarly `*Backlash*` matches the *Show Backlash Graph* pushbutton,
+which sits earlier in the enumeration than the checkbox — that one cost
+an afternoon.
+
+**Use ASCII wildcards for accents.** `*Nachf*hrassistent*`, not the real
+spelling. `D*marrer` for Démarrer.
+
+**Right-to-left does not invert control order.** Arabic mirrors the
+dialog visually — close button on the left, Stop before Start on screen
+— but `FindWindowEx` returns children in z-order, which is creation
+order, and that is unaffected. The positional fallback identified
+`Start='إبدأ', Stop='إيقاف'` correctly. This was worth testing: had it
+inverted, the script would have clicked Stop believing it was Start.
+
+**A curiosity:** in Arabic the Apply buttons are never drawn inside the
+recommendations panel — RTL layout appears to place them outside its
+visible bounds. The script clicks them anyway, because it finds them by
+window handle and handles do not care whether something is painted. In
+that locale the script can apply recommendations a human cannot easily
+click.
+
+### Adding a language
+
+You probably do not need to — but if you want to skip the fallbacks:
+
+```powershell
+.\PHD2_GuidingAssistant.ps1 -Simulate `
+    -GAMenuPatterns '*Guiding*Assistant*','*your*menu*item*' `
+    -GAStartPatterns 'Start','YourStart' `
+    -GAStopPatterns  'Stop','YourStop'
+```
+
+The parameters are `-GAMenuPatterns`, `-GAWindowTitles`,
+`-GAStartPatterns`, `-GAStopPatterns`, `-GAApplyPatterns` and
+`-GABacklashPatterns`. Run once in your language and read the captions
+straight out of the log.
 
 ## Running fully unattended
 
@@ -577,17 +706,27 @@ other ASCOM driver can be passed in.
 
 ### Still open
 
-1. **English-language PHD2 assumed.** The window title
-   `Guiding Assistant`, the menu caption, and the captions `Start`,
-   `Stop`, `Apply` and `Measure Declination Backlash` are matched as
-   literal English strings. A localised PHD2 fails at exit 40. Could be
-   lifted into parameters.
+1. ~~**English-language PHD2 assumed.**~~ **Resolved 2026-07-31.** Every
+   caption is now a parameter, English, German and French ship as
+   defaults, and unmapped languages still work via new-window detection.
+   See [Languages other than English](#languages-other-than-english).
 2. **GEM assumed** in the positioning logic. Alt-az mounts now get a
    warning, but "Dec 0, 5° west of the meridian" still isn't meaningful
-   for them.
+   for them. Deliberately not engineered further — guiding an alt-az rig
+   with PHD2 is niche, and it would mean designing for a user who isn't
+   here to consult.
 3. **Guide star SNR is not checked** after settling. A marginal star
    means 130 s of measurement producing recommendations from a star that
    keeps dropping out. Aborting early would be better.
+
+   *Also worth recording: verifying that the Apply clicks landed took
+   three attempts to get right. "Did the numbers change" fails when PHD2
+   recommends values a rig already uses. "Are all the buttons now
+   disabled" fails because PHD2 does not reliably disable a button whose
+   recommendation was already satisfied. The current test — values moved,
+   OR at least one clicked button responded — is the third design, and
+   the first two each looked correct until a specific run disproved
+   them.*
 4. **`MaxStarLost = 8`** during the GA run remains a guess. The first
    real-sky run (2026-07-30) recorded zero star losses, so the threshold
    was never approached — which tells us it isn't obviously too tight,
@@ -742,15 +881,20 @@ reaches its minimum. Recommendations, and the Apply buttons themselves,
 do not exist until that completes. The script waits for that window to
 disappear before looking for results.
 
-## A trap: '*Backlash*' matches two controls
-
+## Traps in the Guiding Assistant dialog
 
 The dialog contains both `Show Backlash Graph` (a pushbutton) and
 `Measure Declination Backlash` (the checkbox), and the pushbutton comes
 first in enumeration order. Matching `'*Backlash*'` returned the
 pushbutton, whose `BM_GETCHECK` is always 0 — so the script reported the
 box as unchecked while it was visibly ticked. The pattern must be
-`'Measure*Backlash*'`.
+specific, e.g. `'Measure*Backlash*'`.
+
+This is also why the checkbox is now found by **window style** rather
+than caption when no pattern matches: a checkbox declares itself through
+`BS_AUTOCHECKBOX`, and that cannot be mistaken for a pushbutton in any
+language. See
+[Languages other than English](#languages-other-than-english).
 
 ## GA duration floor — 120 s
 

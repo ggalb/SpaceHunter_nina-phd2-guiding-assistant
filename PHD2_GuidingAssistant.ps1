@@ -99,6 +99,11 @@ param(
     [int]    $SettleTimeout        = 120,
     [int]    $MaxStarLost          = 8,      # tolerated StarLost events during GA
 
+    # How long to wait after Stop for the recommendations to appear.
+    # Generous on purpose: PHD2 may still be topping the sample up to its
+    # two-minute minimum, or running a backlash measurement.
+    [int]    $ApplyWaitSec         = 300,
+
     # ---- Mount -------------------------------------------------------
     [string] $MountProgId          = 'ASCOM.GS.Sky.Telescope',
     [int]    $SlewTimeoutSec       = 180,
@@ -109,6 +114,90 @@ param(
     #   Auto = FindHome if the driver supports it, else Park, else nothing
     [ValidateSet('Auto', 'Home', 'Park', 'None')]
     [string] $EndAction            = 'Auto',
+
+    # ---- PHD2 user-interface strings ---------------------------------
+    # The Guiding Assistant is driven through its GUI, so these captions
+    # matter. PHD2's translations are patchy - in German the 'Tools' menu
+    # itself stays English while the item becomes 'Nachfuehrassistent'.
+    #
+    # NOTE: patterns are deliberately ASCII-only, using wildcards where a
+    # word contains an accented character. Windows PowerShell 5.1 reads a
+    # UTF-8 file without a BOM as ANSI, so a literal umlaut here could be
+    # mangled and never match. '*Nachf*hrassistent*' sidesteps that.
+    #
+    # If your language is missing, add it here - and please report it so
+    # it can be added for everyone.
+    # BE SPECIFIC. Several languages leave 'Calibration Assistant...'
+    # untranslated, so a loose '*Assistant*' would match that instead and
+    # open the wrong dialog. Each pattern below names both words.
+    [string[]] $GAMenuPatterns = @(
+        '*Guiding*Assistant*',      # English
+        '*Nachf*hrassistent*',      # German  - Nachfuehrassistent
+        '*Assistant*Guidage*',      # French  - Assistant de Guidage
+        '*Asistente*Guiado*',       # Spanish - Asistente de Guiado
+        '*Assistente*Guida*',       # Italian  - Assistente di guida
+        '*Assistente*guiagem*'      # Portuguese - Assistente de guiagem
+    ),
+
+    # Last-resort way into the dialog when no caption matches. Windows
+    # menu command IDs are assigned at build time and do NOT vary by
+    # locale - 216 was observed identically in English, German, French
+    # and Spanish builds of PHD2 2.6.14. It MAY change between PHD2
+    # versions, so it is only used after caption matching has failed,
+    # and the result is verified by checking a window actually appeared.
+    # Set to 0 to disable.
+    [int] $GAMenuCommandId = 216,
+
+    # NB: PHD2 is not internally consistent - in German the MENU item is
+    # 'Nachfuehrassistent' but the WINDOW is titled 'Guiding-Assistent'.
+    [string[]] $GAWindowTitles = @(
+        'Guiding Assistant',        # English
+        'Assistant de Guidage',     # French
+        'Guiding-Assistent',        # German
+        'Asistente de Guiado',      # Spanish
+        'Assistente di guida',      # Italian
+        'Assistente de guiagem'     # Portuguese
+    ),
+
+    # Buttons inside the dialog. Wildcards stand in for accented letters:
+    # 'D*marrer' matches Demarrer, 'Arr*ter' matches Arreter.
+    [string[]] $GAStartPatterns = @(
+        'Start',                    # English
+        'Starten',                  # German
+        'D*marrer',                 # French  - Demarrer
+        'Iniciar',                  # Spanish / Portuguese
+        'Inizia'                    # Italian
+    ),
+
+    [string[]] $GAStopPatterns = @(
+        'Stop',                     # English, and German leaves it as-is
+        'Arr*ter',                  # French  - Arreter
+        'Parar',                    # Spanish / Portuguese
+        'Ferma'                     # Italian
+    ),
+
+    [string[]] $GAApplyPatterns = @(
+        'Apply',                    # English
+        'Anwenden',                 # German  - confirmed 2026-07-31
+        'Aplicar',                  # Spanish - confirmed 2026-07-31
+        'Applica',                  # Italian - confirmed 2026-07-31
+        'Appliquer'                 # French  - candidate; French may also use 'Apply'
+    ),
+
+    # Must be specific: French also has 'Montrer le Graphique du Jeu',
+    # which contains 'Jeu' but is a pushbutton, not the checkbox.
+    # Each is specific enough not to match the 'Show Backlash Graph'
+    # pushbutton, which also contains the word Backlash in several
+    # languages.
+    [string[]] $GABacklashPatterns = @(
+        'Measure*Backlash*',        # English
+        'Messung*Backlash*',        # German  - Messung Backlash der Deklination
+        'Medida*Backlash*',         # Spanish - Medida del Backlash de Declinacion
+        'Misurazione*backlash*',    # Italian - Misurazione del backlash in declinazione
+        'Medir*folga*',             # Portuguese - Medir folga de declinacao
+                                    #   note: no form of 'backlash' appears at all
+        'Mesurer*Jeu*'              # French  - Mesurer le Jeu de Declinaison
+    ),
 
     # ---- Behaviour ---------------------------------------------------
     [switch] $Simulate,                      # skip all mount movement
@@ -798,8 +887,20 @@ Add-Type -Namespace Native -Name Win32Menu -MemberDefinition @'
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
 '@
 }
+
+$GWL_STYLE = -16
+# Button style bits. The low nibble of a BUTTON's style says what kind
+# of button it is - and unlike its caption, that is not translated.
+$BS_TYPEMASK      = 0x0F
+$BS_CHECKBOX      = 0x02
+$BS_AUTOCHECKBOX  = 0x03
+$BS_3STATE        = 0x05
+$BS_AUTO3STATE    = 0x06
 
 $BM_CLICK    = 0x00F5
 $BM_GETCHECK = 0x00F0
@@ -861,6 +962,11 @@ function Open-GuidingAssistant {
 
     $opened = $false
 
+    # Snapshot the visible top-level windows BEFORE we invoke anything.
+    # If no known title matches afterwards, the window that appeared in
+    # the meantime is the dialog - whatever language it is in.
+    $windowsBefore = Get-TopLevelWindowMap
+
     # ---- Attempt 1: native Win32 menu command (most reliable) --------
     try {
         $hwnd = Get-PhdWindowHandle $phd
@@ -874,17 +980,35 @@ function Open-GuidingAssistant {
             }
             else {
                 $seen = New-Object System.Collections.ArrayList
-                $id = Find-MenuCommandId $hMenu '*Guiding*Assistant*' $seen
+                $id = 0
+                $matched = ''
+                foreach ($pat in $GAMenuPatterns) {
+                    $seen.Clear()
+                    $id = Find-MenuCommandId $hMenu $pat $seen
+                    if ($id -ne 0) { $matched = $pat; break }
+                }
                 if ($id -ne 0) {
-                    Write-Log "Found 'Guiding Assistant' menu command id=$id - posting WM_COMMAND."
+                    Write-Log "Found the Guiding Assistant menu item via pattern '$matched', command id=$id - posting WM_COMMAND."
                     [void][Native.Win32Menu]::SetForegroundWindow($hwnd)
                     Start-Sleep -Milliseconds 200
                     [void][Native.Win32Menu]::PostMessageW($hwnd, [uint32]$WM_COMMAND, [IntPtr]$id, [IntPtr]::Zero)
                     $opened = $true
                 }
                 else {
-                    Write-Log "No menu item matched '*Guiding*Assistant*'." 'WARN'
+                    Write-Log ("No menu item matched any of: " + ($GAMenuPatterns -join ' , ')) 'WARN'
                     Write-Log ("Menu items seen: " + ($seen -join ' | ')) 'WARN'
+                    Write-Log ("If PHD2 is not in English, find the Guiding Assistant entry in that " +
+                               "list and pass it via -GAMenuPatterns (ASCII wildcards only, e.g. " +
+                               "'*Nachf*hrassistent*').") 'WARN'
+
+                    # Language-independent last resort: the command ID.
+                    if ($GAMenuCommandId -gt 0) {
+                        Write-Log ("Trying the known menu command id {0} instead - menu IDs do not vary by language." -f $GAMenuCommandId) 'WARN'
+                        [void][Native.Win32Menu]::SetForegroundWindow($hwnd)
+                        Start-Sleep -Milliseconds 200
+                        [void][Native.Win32Menu]::PostMessageW($hwnd, [uint32]$WM_COMMAND, [IntPtr]$GAMenuCommandId, [IntPtr]::Zero)
+                        $opened = $true
+                    }
                 }
             }
         }
@@ -939,7 +1063,7 @@ function Open-GuidingAssistant {
         }
     }
 
-    $ga = Find-GAWindow 25
+    $ga = Find-GAWindow 25 $windowsBefore
     if ($ga -eq [IntPtr]::Zero) {
         Log-WindowDiagnostics $phd
         Fail 40 "The Guiding Assistant window did not appear."
@@ -1007,35 +1131,63 @@ function Log-WindowDiagnostics {
 # poorly through the MSAA-to-UIA bridge - so everything downstream is
 # done with plain Win32 calls instead.
 function Find-GAWindow {
-    param([int]$TimeoutSec = 25)
+    param(
+        [int]$TimeoutSec = 25,
+        $WindowsBefore = $null      # snapshot taken before the menu command
+    )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
 
     while ((Get-Date) -lt $deadline) {
 
-        # 1. exact-title lookup
-        try {
-            $h = [Native.Win32Menu]::FindWindowW($NULLSTR, 'Guiding Assistant')
-            if ($h -ne [IntPtr]::Zero) {
-                Write-Log ("Found GA window by exact title, handle [{0}]." -f $h)
-                return $h
-            }
-        } catch { }
+        # 1. exact-title lookup, for each known translation
+        foreach ($title in $GAWindowTitles) {
+            try {
+                $h = [Native.Win32Menu]::FindWindowW($NULLSTR, $title)
+                if ($h -ne [IntPtr]::Zero) {
+                    Write-Log ("Found GA window by exact title '{0}', handle [{1}]." -f $title, $h)
+                    return $h
+                }
+            } catch { }
+        }
 
-        # 2. scan top-level window titles
+        # 2. partial title scan, for each known translation
         try {
             $h = [IntPtr]::Zero
-            for ($n = 0; $n -lt 300; $n++) {
+            for ($n = 0; $n -lt 400; $n++) {
                 $h = [Native.Win32Menu]::FindWindowExW([IntPtr]::Zero, $h, $NULLSTR, $NULLSTR)
                 if ($h -eq [IntPtr]::Zero) { break }
                 $sb = New-Object System.Text.StringBuilder 512
                 [void][Native.Win32Menu]::GetWindowTextW($h, $sb, 512)
-                if ($sb.ToString() -like '*Guiding Assistant*') {
-                    Write-Log ("Found GA window by title scan [{0}] '{1}'." -f $h, $sb.ToString())
-                    return $h
+                $t = $sb.ToString()
+                foreach ($title in $GAWindowTitles) {
+                    if ($t -like ('*' + $title + '*')) {
+                        Write-Log ("Found GA window by title scan [{0}] '{1}'." -f $h, $t)
+                        return $h
+                    }
                 }
             }
         } catch { }
+
+        # 3. LANGUAGE-INDEPENDENT: whatever window just appeared.
+        #    We snapshotted the visible top-level windows before invoking
+        #    the menu item, so a newly-arrived window is almost certainly
+        #    the dialog - whatever it happens to be called. This is what
+        #    lets the script work in a language nobody has mapped yet.
+        if ($WindowsBefore) {
+            $now = Get-TopLevelWindowMap
+            foreach ($key in $now.Keys) {
+                if (-not $WindowsBefore.ContainsKey($key)) {
+                    $title = $now[$key]
+                    # Ignore the PHD2 main window itself if it re-registers
+                    if ($title -like 'PHD2*') { continue }
+                    Write-Log ("Found a NEW window after the menu command: '{0}'" -f $title)
+                    Write-Log ("If that is the Guiding Assistant in your language, add it to " +
+                               "-GAWindowTitles so future runs match it directly.") 'WARN'
+                    return [IntPtr][int]$key
+                }
+            }
+        }
 
         Start-Sleep -Milliseconds 500
     }
@@ -1064,12 +1216,20 @@ function Get-ChildControls {
         $txt = New-Object System.Text.StringBuilder 512
         [void][Native.Win32Menu]::GetWindowTextW($h, $txt, 512)
 
+        $style = 0
+        try { $style = [Native.Win32Menu]::GetWindowLongW($h, $GWL_STYLE) } catch { }
+        $btnType = $style -band $BS_TYPEMASK
+        $isCheck = ($cls.ToString() -eq 'Button') -and
+                   ($btnType -eq $BS_CHECKBOX -or $btnType -eq $BS_AUTOCHECKBOX -or
+                    $btnType -eq $BS_3STATE   -or $btnType -eq $BS_AUTO3STATE)
+
         [void]$list.Add([pscustomobject]@{
-            Handle  = $h
-            Class   = $cls.ToString()
-            Text    = ($txt.ToString() -replace '&', '').Trim()
-            Enabled = [Native.Win32Menu]::IsWindowEnabled($h)
-            Visible = [Native.Win32Menu]::IsWindowVisible($h)
+            Handle     = $h
+            Class      = $cls.ToString()
+            Text       = ($txt.ToString() -replace '&', '').Trim()
+            Enabled    = [Native.Win32Menu]::IsWindowEnabled($h)
+            Visible    = [Native.Win32Menu]::IsWindowVisible($h)
+            IsCheckbox = $isCheck
         })
 
         foreach ($c in (Get-ChildControls $h ($Depth + 1))) { [void]$list.Add($c) }
@@ -1092,6 +1252,26 @@ function Find-TopWindowByTitle {
     catch { return [IntPtr]::Zero }
 }
 
+# Snapshot every visible top-level window that has a title, as
+# handle -> title. Used to spot the Guiding Assistant appearing without
+# knowing what it is called in the user's language.
+function Get-TopLevelWindowMap {
+    $map = @{}
+    try {
+        $h = [IntPtr]::Zero
+        for ($n = 0; $n -lt 400; $n++) {
+            $h = [Native.Win32Menu]::FindWindowExW([IntPtr]::Zero, $h, $NULLSTR, $NULLSTR)
+            if ($h -eq [IntPtr]::Zero) { break }
+            if (-not [Native.Win32Menu]::IsWindowVisible($h)) { continue }
+            $sb = New-Object System.Text.StringBuilder 512
+            [void][Native.Win32Menu]::GetWindowTextW($h, $sb, 512)
+            $t = $sb.ToString().Trim()
+            if ($t) { $map[[string]$h] = $t }
+        }
+    } catch { }
+    return $map
+}
+
 function Get-GAControls {
     param([IntPtr]$GaHwnd, [string]$TextPattern)
     $hits = New-Object System.Collections.ArrayList
@@ -1099,6 +1279,89 @@ function Get-GAControls {
         if ($c.Class -eq 'Button' -and $c.Text -like $TextPattern) { [void]$hits.Add($c) }
     }
     return $hits
+}
+
+# Localised lookups: try each candidate caption in turn. Patterns are
+# ordered English first, so an English PHD2 never pays for the rest.
+function Get-GAControlAny {
+    param([IntPtr]$GaHwnd, [string[]]$Patterns)
+    $controls = Get-ChildControls $GaHwnd
+    foreach ($pat in $Patterns) {
+        foreach ($c in $controls) {
+            if ($c.Class -eq 'Button' -and $c.Text -like $pat) { return $c }
+        }
+    }
+    return $null
+}
+
+function Get-GAControlsAny {
+    param([IntPtr]$GaHwnd, [string[]]$Patterns)
+    $controls = Get-ChildControls $GaHwnd
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($pat in $Patterns) {
+        foreach ($c in $controls) {
+            if ($c.Class -eq 'Button' -and $c.Text -like $pat) { [void]$hits.Add($c) }
+        }
+        if ($hits.Count -gt 0) { break }   # first pattern that matches wins
+    }
+    return $hits
+}
+
+# =====================================================================
+#  LANGUAGE-INDEPENDENT CONTROL IDENTIFICATION
+# ---------------------------------------------------------------------
+#  Captions are translated; structure is not. When no caption pattern
+#  matches - a language nobody has mapped, or a non-Latin script where
+#  the wildcard trick cannot work at all - fall back to what the dialog
+#  is rather than what it says.
+#
+#  Verified against the English, German and French dialogs, which all
+#  enumerate their trailing controls in the same order:
+#
+#      <backlash checkbox> , <status text> , Start , OptionsButton , Stop
+#
+#  'OptionsButton' is a wxWidgets internal name and is NOT localised,
+#  which makes it a dependable anchor.
+# =====================================================================
+
+# The backlash control is the only checkbox in the dialog, and a
+# checkbox announces itself through its window style rather than its
+# caption.
+function Get-GACheckboxByStyle {
+    param([IntPtr]$GaHwnd)
+    foreach ($c in (Get-ChildControls $GaHwnd)) {
+        if ($c.IsCheckbox) { return $c }
+    }
+    return $null
+}
+
+# Start and Stop by position relative to the OptionsButton anchor.
+# Returns a hashtable with Start and Stop, either of which may be null.
+function Get-GAStartStopByPosition {
+    param([IntPtr]$GaHwnd)
+
+    $controls = @(Get-ChildControls $GaHwnd)
+    $anchor = -1
+    for ($i = 0; $i -lt $controls.Count; $i++) {
+        if ($controls[$i].Text -eq 'OptionsButton') { $anchor = $i; break }
+    }
+    if ($anchor -lt 0) { return @{ Start = $null; Stop = $null } }
+
+    # Start: the last Button before the anchor
+    $start = $null
+    for ($i = $anchor - 1; $i -ge 0; $i--) {
+        if ($controls[$i].Class -eq 'Button' -and -not $controls[$i].IsCheckbox) {
+            $start = $controls[$i]; break
+        }
+    }
+    # Stop: the first Button after the anchor
+    $stop = $null
+    for ($i = $anchor + 1; $i -lt $controls.Count; $i++) {
+        if ($controls[$i].Class -eq 'Button' -and -not $controls[$i].IsCheckbox) {
+            $stop = $controls[$i]; break
+        }
+    }
+    return @{ Start = $start; Stop = $stop }
 }
 
 function Click-Control {
@@ -1133,15 +1396,23 @@ function Ensure-BacklashUnchecked {
     # 'Show Backlash Graph' pushbutton, which appears EARLIER in the
     # enumeration and always reports BM_GETCHECK = 0 - so the script
     # cheerfully reported the box as unchecked while it was ticked.
-    $cb = Get-GAControl $GaHwnd 'Measure*Backlash*'
+    $cb = Get-GAControlAny $GaHwnd $GABacklashPatterns
     if (-not $cb) {
-        Write-Log "Could not locate the backlash checkbox - continuing." 'WARN'
+        # No caption matched - identify it structurally instead.
+        $cb = Get-GACheckboxByStyle $GaHwnd
+        if ($cb) {
+            Write-Log ("No backlash caption matched; identified it by control style instead: '{0}'." -f $cb.Text) 'WARN'
+            Write-Log "Add that caption to -GABacklashPatterns to match it directly in future." 'WARN'
+        }
+    }
+    if (-not $cb) {
+        Write-Log "Could not locate the backlash checkbox, by caption or by style - continuing." 'WARN'
         return
     }
 
     $state = ([Native.Win32Menu]::SendMessageW($cb.Handle, [uint32]$BM_GETCHECK, [IntPtr]::Zero, [IntPtr]::Zero)).ToInt32()
     if ($state -ne 0) {
-        Write-Log "'Measure Declination Backlash' was checked - unchecking it."
+        Write-Log ("Backlash checkbox '{0}' was checked - unchecking it." -f $cb.Text)
         Click-Control $cb
         Start-Sleep -Milliseconds 500
         $state = ([Native.Win32Menu]::SendMessageW($cb.Handle, [uint32]$BM_GETCHECK, [IntPtr]::Zero, [IntPtr]::Zero)).ToInt32()
@@ -1151,7 +1422,7 @@ function Ensure-BacklashUnchecked {
             Write-Log "Backlash checkbox is now unchecked."
         }
     } else {
-        Write-Log "'Measure Declination Backlash' is unchecked, as required."
+        Write-Log ("Backlash checkbox '{0}' is unchecked, as required." -f $cb.Text)
     }
 }
 
@@ -1159,24 +1430,19 @@ function Ensure-BacklashUnchecked {
 # earlier it opens an 'Extended Sampling' window with a countdown and
 # keeps measuring; recommendations - and the Apply buttons themselves -
 # do not exist until that finishes. Wait it out.
-function Wait-ForExtendedSampling {
-    param([int]$TimeoutSec = 240)
-
+# After Stop is clicked PHD2 may not be finished: it tops short runs up
+# to its two-minute minimum ('Extended Sampling'), and if the backlash
+# checkbox was left ticked it starts a backlash measurement instead.
+#
+# We deliberately do NOT depend on recognising those windows by title -
+# they are localised, and chasing translations for every state PHD2 can
+# enter is a losing game. Instead we simply wait for the Apply buttons
+# to appear, whatever PHD2 is doing meanwhile. That is language-neutral.
+function Note-ExtendedSampling {
     Start-Sleep -Seconds 2
-    $h = Find-TopWindowByTitle 'Extended Sampling'
-    if ($h -eq [IntPtr]::Zero) { return }
-
-    Write-Log "PHD2 opened 'Extended Sampling' - it is topping up to its 2-minute minimum. Waiting."
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if ((Find-TopWindowByTitle 'Extended Sampling') -eq [IntPtr]::Zero) {
-            Write-Log "Extended sampling finished."
-            Start-Sleep -Seconds 2
-            return
-        }
-        Start-Sleep -Seconds 2
+    if ((Find-TopWindowByTitle 'Extended Sampling') -ne [IntPtr]::Zero) {
+        Write-Log "PHD2 opened 'Extended Sampling' - topping up to its 2-minute minimum. Waiting for results."
     }
-    Write-Log "Extended sampling did not finish within ${TimeoutSec}s - continuing anyway." 'WARN'
 }
 
 # =====================================================================
@@ -1297,9 +1563,24 @@ try {
     $measuring = $false
     $deadline  = (Get-Date).AddSeconds(60)
 
+    $positionalNoted = $false
     while ((Get-Date) -lt $deadline) {
-        $startBtn = Get-GAControl $gaWindow 'Start'
-        $stopBtn  = Get-GAControl $gaWindow 'Stop'
+        $startBtn = Get-GAControlAny $gaWindow $GAStartPatterns
+        $stopBtn  = Get-GAControlAny $gaWindow $GAStopPatterns
+
+        # Neither caption recognised? Identify them by position instead.
+        if (-not $startBtn -and -not $stopBtn) {
+            $byPos = Get-GAStartStopByPosition $gaWindow
+            $startBtn = $byPos.Start
+            $stopBtn  = $byPos.Stop
+            if (-not $positionalNoted -and ($startBtn -or $stopBtn)) {
+                Write-Log ("No Start/Stop caption matched. Identified them by position: Start='{0}', Stop='{1}'." -f `
+                           $(if ($startBtn) { $startBtn.Text } else { '?' }),
+                           $(if ($stopBtn)  { $stopBtn.Text }  else { '?' })) 'WARN'
+                Write-Log "Add those captions to -GAStartPatterns / -GAStopPatterns to match them directly in future." 'WARN'
+                $positionalNoted = $true
+            }
+        }
 
         if ($stopBtn -and $stopBtn.Enabled) {
             Write-Log "GA auto-started measurement (guiding was already active)."
@@ -1356,25 +1637,69 @@ try {
     # Stop starts a declination backlash run instead of finishing.
     Ensure-BacklashUnchecked $gaWindow
 
+    # Remember which controls exist now: the Apply buttons do not yet
+    # exist, so anything new afterwards is a strong candidate.
+    $btnHandlesBeforeStop = @{}
+    foreach ($c in (Get-ChildControls $gaWindow)) {
+        if ($c.Class -eq 'Button') { $btnHandlesBeforeStop[[string]$c.Handle] = $true }
+    }
+
     Write-Log "Clicking Stop."
-    $stopBtn = Get-GAControl $gaWindow 'Stop'
+    $stopBtn = Get-GAControlAny $gaWindow $GAStopPatterns
+    if (-not $stopBtn) { $stopBtn = (Get-GAStartStopByPosition $gaWindow).Stop }
     if ($stopBtn -and $stopBtn.Enabled) { Click-Control $stopBtn }
     else { Write-Log "'Stop' button not available - GA may have ended by itself." 'WARN' }
 
     # PHD2 may insist on more sampling before it will show results.
-    Wait-ForExtendedSampling
+    Note-ExtendedSampling
 
     # ---------- 5. Apply the recommendations -------------------------
     # The Apply buttons are created only when the recommendations render,
     # so poll for them rather than assuming they already exist.
+    # Poll generously. PHD2 can still be sampling, or working through a
+    # backlash measurement, and the buttons do not exist until it is done.
     $applyBtns = @()
-    $deadline  = (Get-Date).AddSeconds(45)
+    $deadline  = (Get-Date).AddSeconds($ApplyWaitSec)
+    $lastNote  = Get-Date
+    $foundByCaption = $false
     while ((Get-Date) -lt $deadline) {
-        $applyBtns = @(Get-GAControls $gaWindow 'Apply')
-        if ($applyBtns.Count -gt 0) { break }
+        $applyBtns = @(Get-GAControlsAny $gaWindow $GAApplyPatterns)
+        if ($applyBtns.Count -gt 0) { $foundByCaption = $true; break }
+
+        # Language-independent fallback: the Apply buttons are created
+        # when the recommendations render, so any Button that did not
+        # exist before we clicked Stop is a candidate.
+        $fresh = New-Object System.Collections.ArrayList
+        foreach ($c in (Get-ChildControls $gaWindow)) {
+            if ($c.Class -eq 'Button' -and -not $c.IsCheckbox -and
+                -not $btnHandlesBeforeStop.ContainsKey([string]$c.Handle)) {
+                [void]$fresh.Add($c)
+            }
+        }
+        if ($fresh.Count -gt 0) {
+            $applyBtns = @($fresh)
+            break
+        }
+
+        if (((Get-Date) - $lastNote).TotalSeconds -ge 30) {
+            $remaining = [int]($deadline - (Get-Date)).TotalSeconds
+            Write-Log "Still waiting for the recommendations to appear - ${remaining}s left."
+            $lastNote = Get-Date
+        }
         Start-Sleep -Seconds 1
     }
-    Write-Log ("Found {0} 'Apply' button(s)." -f $applyBtns.Count)
+
+    if ($applyBtns.Count -gt 0) {
+        if ($foundByCaption) {
+            Write-Log ("Found {0} apply button(s), captioned '{1}'." -f $applyBtns.Count, $applyBtns[0].Text)
+        } else {
+            Write-Log ("No apply caption matched. Found {0} newly-created button(s) instead, captioned '{1}'." -f `
+                       $applyBtns.Count, $applyBtns[0].Text) 'WARN'
+            Write-Log "Add that caption to -GAApplyPatterns to match it directly in future." 'WARN'
+        }
+    } else {
+        Write-Log "Found 0 apply buttons, by caption or by creation order."
+    }
 
     $applied = 0
     foreach ($b in $applyBtns) {
@@ -1392,30 +1717,68 @@ try {
         Fail 43 "The Guiding Assistant offered no Apply buttons."
     }
 
+    # One retry for anything still enabled. A posted BM_CLICK can be
+    # missed while the dialog is rebuilding its recommendations panel.
     Start-Sleep -Seconds 1
+    $retried = 0
+    foreach ($b in (Get-GAControlsAny $gaWindow $GAApplyPatterns)) {
+        if ($b.Enabled) {
+            Write-Log ("An apply button is still enabled - clicking it again.") 'WARN'
+            Click-Control $b
+            $retried++
+            Start-Sleep -Milliseconds 800
+        }
+    }
+    if ($retried -gt 0) { Start-Sleep -Seconds 1 }
+
     $raAfter  = Phd-GetMinMove 'ra'  $raParam
     $decAfter = Phd-GetMinMove 'dec' $decParam
     Write-Log ("Min-move after:  RA={0}  Dec={1}" -f $raAfter, $decAfter)
 
-    # Verifying by "did the numbers change" is not sound on its own: if
-    # PHD2 recommends the same values it recommended last time - which is
-    # entirely normal, and guaranteed with the deterministic simulator -
-    # nothing changes even though every click landed. So the primary
-    # evidence is that PHD2 DISABLED the Apply buttons, which it does
-    # once a recommendation has been applied. Unchanged values with the
-    # buttons still live means the clicks really did miss.
+    # How do we know the clicks landed?
+    #
+    # Not by "did the numbers change" - PHD2 frequently recommends values
+    # a rig is already using, in which case applying them changes
+    # nothing. That is a correct outcome, not a failure. (Observed
+    # 2026-07-31: recommendations of RA 0.10 / Dec 0.15 against current
+    # values of exactly 0.1 and 0.15.)
+    #
+    # Nor by "are all buttons now disabled" - PHD2 does not reliably
+    # disable a button whose recommendation was already satisfied.
+    #
+    # So: success if the values moved, OR if at least one button we
+    # clicked went from enabled to disabled - proof that clicking works
+    # at all. Only when neither holds is something genuinely wrong.
+    $nowEnabled = @{}
+    foreach ($b in (Get-GAControlsAny $gaWindow $GAApplyPatterns)) {
+        $nowEnabled[[string]$b.Handle] = $b.Enabled
+    }
+    $wentDisabled = 0
     $stillEnabled = 0
-    foreach ($b in (Get-GAControls $gaWindow 'Apply')) {
-        if ($b.Enabled) { $stillEnabled++ }
+    foreach ($b in $applyBtns) {
+        $key = [string]$b.Handle
+        if ($nowEnabled.ContainsKey($key)) {
+            if ($nowEnabled[$key]) { $stillEnabled++ } else { $wentDisabled++ }
+        } else {
+            $wentDisabled++      # button gone entirely - certainly acted upon
+        }
     }
 
-    if (($raAfter -eq $raBefore) -and ($decAfter -eq $decBefore)) {
-        if ($stillEnabled -gt 0) {
+    $valuesChanged = -not (($raAfter -eq $raBefore) -and ($decAfter -eq $decBefore))
+
+    if (-not $valuesChanged) {
+        if ($wentDisabled -eq 0) {
             Log-GAControls $gaWindow
-            Fail 44 ("Min-move values unchanged and {0} 'Apply' button(s) are still enabled - the clicks did not take." -f $stillEnabled)
+            Fail 44 ("Min-move values unchanged and none of the {0} 'Apply' button(s) responded - the clicks did not take." -f $applyBtns.Count)
         }
-        Write-Log ("Min-move values are unchanged, but all 'Apply' buttons are now disabled, so the " +
-                   "clicks landed. PHD2 simply recommended the same values it recommended last time.") 'WARN'
+        if ($stillEnabled -gt 0) {
+            Write-Log ("Min-move values unchanged. {0} button(s) responded, {1} still enabled - PHD2 most " +
+                       "likely recommended values this rig already uses, so applying them changed nothing." -f `
+                       $wentDisabled, $stillEnabled) 'WARN'
+        } else {
+            Write-Log ("Min-move values are unchanged, but every 'Apply' button responded. PHD2 simply " +
+                       "recommended the values already in use.") 'WARN'
+        }
     }
 
     if ($applied -eq 1) {
