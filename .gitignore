@@ -5,6 +5,9 @@ NINA_console.txt
 stderr.txt
 *.log
 
+# Generated documentation — built from README.md, not versioned
+PHD2_GuidingAssistant_Documentation.html
+
 # Windows / editor noise
 Thumbs.db
 desktop.ini

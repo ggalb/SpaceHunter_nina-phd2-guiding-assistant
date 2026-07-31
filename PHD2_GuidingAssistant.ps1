@@ -2,6 +2,26 @@
 =====================================================================
  PHD2_GuidingAssistant.ps1
 ---------------------------------------------------------------------
+ Why run the Guiding Assistant at all?
+           With guide output switched off, PHD2 watches an unguided star
+           and measures what the sky and the mount are actually doing
+           tonight: high-frequency star motion (the seeing), drift in RA
+           and Dec, polar alignment error, and optionally declination
+           backlash.
+
+           The most useful product is the recommended MINIMUM MOVE for
+           each axis - the threshold below which the guider should not
+           react at all. Set it too low and the guider chases seeing,
+           issuing corrections for motion that has already reversed and
+           making the tracking worse than leaving it alone. Set it too
+           high and real drift goes uncorrected.
+
+           The right value depends on the seeing, which changes from
+           night to night and even through a single night. That is the
+           argument for measuring it each session rather than setting it
+           once and forgetting it - and, since the measurement is
+           mechanical and takes minutes, for automating it.
+
  Purpose : Called by N.I.N.A. as an External Script, once per night,
            after the TPPA polar alignment routine and before imaging.
 
@@ -181,8 +201,29 @@ function Phd-Connect {
         Fail 10 "Cannot reach PHD2 on ${PhdHost}:${PhdPort}. Is PHD2 running with Tools > Enable Server checked? ($($_.Exception.Message))"
     }
     Start-Sleep -Milliseconds 500
-    Phd-Pump | Out-Null      # swallow the initial Version / AppState burst
-    Write-Log "PHD2 connected."
+
+    # On connect PHD2 sends a burst of events beginning with 'Version'.
+    # Record it: the Guiding Assistant is driven through its GUI, whose
+    # window title and button captions are not an API and could change
+    # between releases. Knowing which PHD2 a run succeeded against is
+    # what makes an upgrade-related breakage quick to diagnose.
+    $phdVersion = $null
+    foreach ($line in (Phd-Pump)) {
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if ($obj.PSObject.Properties.Name -contains 'Event' -and $obj.Event -eq 'Version') {
+            $phdVersion = $obj
+        }
+    }
+
+    if ($phdVersion) {
+        $sub = ''
+        try { if ($phdVersion.PHDSubver) { $sub = $phdVersion.PHDSubver } } catch { }
+        Write-Log ("PHD2 connected.  Version {0}{1}   (RPC message protocol v{2})" -f `
+                   $phdVersion.PHDVersion, $sub, $phdVersion.MsgVersion)
+    }
+    else {
+        Write-Log "PHD2 connected. (No Version event seen - continuing.)" 'WARN'
+    }
 }
 
 function Phd-Disconnect {
@@ -1064,7 +1105,11 @@ function Log-GAControls {
 }
 
 # Must run before Stop is clicked: with this box ticked, Stop begins a
-# declination backlash run instead of finishing the session.
+# declination backlash run instead of finishing the session. Not a
+# hazard - PHD2 measures backlash with north/south guide pulses, so the
+# star moves a few arcseconds and the mount stays put - but it extends
+# the run by several minutes and produces a measurement we did not ask
+# for. Georg measures backlash deliberately, occasionally, by hand.
 # wxCheckBox is a Win32 "Button" class control, so we find it by caption
 # and read its state with BM_GETCHECK.
 function Ensure-BacklashUnchecked {

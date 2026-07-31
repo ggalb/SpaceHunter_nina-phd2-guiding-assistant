@@ -2,16 +2,21 @@
 
 Runs PHD2's Guiding Assistant automatically, once per night, as a step in
 an N.I.N.A. sequence. It positions the mount, starts guiding, measures
-the seeing, applies PHD2's recommended min-move values, and sends the
-mount home — with no clicking.
+tonight's seeing and the behaviour of the mount and guiding subsystem,
+applies PHD2's recommended minimum-move values, and sends the mount home
+— with no clicking.
+
+Seeing changes from night to night, so guiding parameters tuned last week
+may not suit this evening. This automates the measurement that keeps them
+current.
 
 The Guiding Assistant isn't exposed in PHD2's API, so that part is driven
 through the Windows API. Everything else goes over PHD2's JSON-RPC socket
 and ASCOM.
 
-> **Status:** working and tested end to end against real hardware with
-> PHD2's camera simulator, but **not yet run under real sky.** See
-> [Test status](#test-status).
+> **Status:** working. Run successfully under real sky on 30 July 2026 —
+> real mount, real guide camera, launched from N.I.N.A., completed in
+> under four minutes with no warnings. See [Test status](#test-status).
 
 ## Which files do I need?
 
@@ -39,6 +44,36 @@ them, and it works fine without them:
 **Requirements:** Windows, PHD2, the ASCOM Platform and your mount's
 driver. Nothing to install — the scripts use Windows PowerShell 5.1,
 which ships with Windows.
+
+## Why run the Guiding Assistant?
+
+PHD2's Guiding Assistant switches guide output **off** and simply watches
+an unguided star for a couple of minutes. That gives it a clean look at
+what the sky and the mount are really doing tonight, uncontaminated by
+the guider's own corrections:
+
+- **High-frequency star motion** — the seeing
+- **Drift rates** in right ascension and declination
+- **Polar alignment error**, measured independently of your alignment routine
+- **Declination backlash**, if you ask for it
+
+The most useful thing it produces is a recommended **minimum move** for
+each axis: the threshold below which the guider should not react at all.
+
+That threshold matters more than it sounds. Set it too low and the
+guider chases the seeing — issuing corrections for motion that has
+already reversed by the time the pulse lands, which makes tracking worse
+than doing nothing. Set it too high and genuine drift goes uncorrected.
+The right value sits just above the night's seeing.
+
+And that is the point: **seeing changes from night to night**, and often
+through a single night. A min-move that was right last week may be wrong
+this evening. Since measuring it is mechanical, takes a few minutes, and
+wants doing at the start of every session, it is worth automating — which
+is all this script is.
+
+It also gives you a free second opinion on your polar alignment, from a
+completely different method to whatever you aligned with.
 
 ## What the script does
 
@@ -320,7 +355,24 @@ is left safe. A timestamped log is written beside the script.
 | 4 | Launched from N.I.N.A., real mount, PHD2 simulator | **Pass — exit 0**, 2026-07-26 21:18, 4m00s end to end |
 | 5 | Regression after the capability rewrite, real mount | **Pass — exit 0**, 2026-07-27, three consecutive runs |
 | 6 | Failure paths | **Pass**, 2026-07-27 — see below |
-| 7 | Full run on the real rig under real sky | Not yet done |
+| 7 | **Full run under real sky** | **Pass — exit 0**, 2026-07-30 21:01, 3m56s |
+
+### Real-sky run, 2026-07-30
+
+Launched from N.I.N.A. on the live `Atlas2_290MM` profile with the real
+guide camera. Slewed to Dec 0.00 / HA 5.03° west, `SideOfPier` reported
+`pierEast`, guiding settled in 16 s, the Guiding Assistant sampled for
+130 s and offered two recommendations, both applied:
+
+| | Before | After |
+|---|---|---|
+| RA min-move | 0.16 | 0.13 |
+| Dec min-move | 0.25 | 0.20 |
+
+**No star losses and no warnings** for the whole run. `Measure
+Declination Backlash` was found ticked on the live profile and was
+unticked by the script, so the session ended when asked rather than
+continuing into a backlash measurement.
 
 ### Failure paths verified 2026-07-27
 
@@ -361,6 +413,49 @@ Worth considering for your own profile: `Minimum star SNR for AutoFind`
 defaults to 6, which is permissive for a star whose measurements will set
 your guiding parameters for the night. PHD2's own guidance for the
 Guiding Assistant is a star with SNR of 10 or better.
+
+## Keeping it working when software updates
+
+Short version: **you don't need to watch for updates.** But the risk
+isn't evenly spread, so it's worth knowing where it sits.
+
+| Component | Risk | Why |
+|---|---|---|
+| **PHD2** | **Moderate** | Two surfaces. The JSON-RPC socket is a documented, versioned API and very unlikely to break. The Guiding Assistant dialog is **not an API** — the script matches the window title and the captions `Start`, `Stop`, `Apply` and `Measure Declination Backlash`. Rename or restructure those and it breaks. |
+| ASCOM Platform | Low | `ITelescope` has been stable for years and changes additively. Only basic members are used. |
+| Mount driver (GSS, EQMOD, iOptron, ZWO…) | Low | Capabilities are read at runtime, so if a driver gains or loses `FindHome` the script adapts by itself. |
+| N.I.N.A. | Low | It only launches a batch file and reads the exit code. |
+| Windows / PowerShell 5.1 | Negligible | Win32 window messages are the most stable interface in the stack. |
+
+### It cannot fail silently
+
+Any breakage surfaces as **exit 40, 41 or 43**: the mount is sent home,
+the N.I.N.A. instruction fails, and any failure notification you have
+configured fires. There is no path where it quietly guides all night on
+values it never actually applied.
+
+### After updating PHD2
+
+Run this once, indoors, before the next session:
+
+```powershell
+.\TEST_Simulate_PHD2_GuidingAssistant.bat
+```
+
+Two minutes, no mount movement, and it exercises the whole dialog
+automation — the only part an update is likely to disturb.
+
+### If it does break, the fix is usually one line
+
+Every run logs the PHD2 version it connected to, and when the Guiding
+Assistant opens the script **dumps every control in the dialog** with its
+class, caption and enabled state. So a failure log shows you the new
+captions directly. Changing a match pattern to suit is normally the whole
+repair — that is exactly how the `Measure*Backlash*` and window-detection
+problems were diagnosed during development.
+
+Comparing the PHD2 version in a working log against a failing one tells
+you immediately whether an upgrade is implicated.
 
 ## Known risks
 
@@ -431,8 +526,10 @@ other ASCOM driver can be passed in.
 3. **Guide star SNR is not checked** after settling. A marginal star
    means 130 s of measurement producing recommendations from a star that
    keeps dropping out. Aborting early would be better.
-4. **`MaxStarLost = 8`** during the GA run is a guess, never calibrated
-   against real sky.
+4. **`MaxStarLost = 8`** during the GA run remains a guess. The first
+   real-sky run (2026-07-30) recorded zero star losses, so the threshold
+   was never approached — which tells us it isn't obviously too tight,
+   but not much more than that. One clean night is not calibration.
 
 Southern hemisphere is *not* a concern: approaching from the south and
 finishing northward is correct in both, and a GEM pointing west of the
