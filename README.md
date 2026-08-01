@@ -114,6 +114,13 @@ completely different method to whatever you aligned with.
 Runs once per night, called from N.I.N.A.'s Advanced Sequencer using the
 **Utility → External Script** instruction.
 
+![Dragging the Utility - External Script instruction into a N.I.N.A. startup container, after the polar alignment routine](images/nina-sequence-placement.png)
+
+*Drag **External Script** from the **Utility** group in the instruction
+palette into your sequence. Here it sits in its own instruction set
+inside the startup container, after polar alignment and before imaging
+begins.*
+
 ## Before first use
 
 Put `PHD2_GuidingAssistant.ps1` and `Run_PHD2_GuidingAssistant.bat` in
