@@ -25,6 +25,22 @@ and ASCOM.
 > [Running fully unattended](#running-fully-unattended) and
 > [Languages other than English](#languages-other-than-english).
 
+## Who this is for
+
+Rigs that stay put — **permanent or semi-permanent** installations, where
+the geometry is much the same from one night to the next. Semi-permanent
+means a fully assembled rig carried out and set down, or one wheeled out
+on a cart to a levelled, marked spot needing only minimal polar
+alignment.
+
+It assumes PHD2 is **already calibrated**, declination backlash has
+**already been measured**, and the mount is reasonably well tuned. It
+refines guiding parameters; it doesn't fix mechanics.
+
+**If you break the rig down after every session, use PHD2's Guiding
+Assistant by hand.** You'll be recalibrating anyway, and you're standing
+right there.
+
 ## Which files do I need?
 
 
