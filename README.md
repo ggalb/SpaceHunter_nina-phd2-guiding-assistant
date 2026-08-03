@@ -14,7 +14,25 @@ The Guiding Assistant isn't exposed in PHD2's API, so that part is driven
 through the Windows API. Everything else goes over PHD2's JSON-RPC socket
 and ASCOM.
 
-> **Status:** working, suitable for unattended use, and language-independent.
+> ⚠️ **No safety monitoring. Do not run this unattended under a roof.**
+>
+> This script does not check whether the observatory is safe. It does not
+> read a SafetyMonitor, and it will not stop for an UNSAFE condition.
+>
+> The specific hazard is at the *end* of a run. If your roof closes while
+> the Guiding Assistant is measuring — rain trigger, host-issued close,
+> weather abort — the script carries on to completion and then sends the
+> mount home. **It will slew under a closed roof.** It also unparks a
+> parked mount at the start without asking why it was parked.
+>
+> This is safe on the roll-out rig it was developed on, where there is no
+> roof to close and the operator is present. It is **not** safe in a
+> permanent or hosted observatory. Safety support is in development;
+> until then, do not include this in an unattended sequence at a site
+> with a roof.
+
+> **Status:** working and language-independent. Suitable for unattended
+> use **at a site with no roof to close** — see the warning above.
 >
 > Run under real sky on 30 July 2026 — real mount, real guide camera,
 > launched from N.I.N.A., finished in under four minutes with no
@@ -585,6 +603,13 @@ straight out of the log.
 
 ## Running fully unattended
 
+> ⚠️ **Read the safety warning at the top of this file first.** What
+> follows establishes that the *automation* runs without a rendered
+> display or an attached session. It does **not** mean the script is
+> safe to leave unattended under a roof — it has no safety monitoring
+> at all, and will slew the mount home even if the roof has closed
+> beneath it.
+
 If your rig lives in an observatory and nobody is present — N.I.N.A.
 looping, no polar alignment step, no human until something breaks —
 this works. It has been tested.
@@ -696,6 +721,16 @@ you immediately whether an upgrade is implicated.
 4. Coordinates are computed as topocentric-of-date from `SiderealTime`. If
    the driver reports J2000 there is a ~0.4° precession discrepancy —
    irrelevant at a 5° offset.
+5. **No safety monitoring — the most serious limitation.** The script
+   validates calibration, mount state and position up front, acts on that
+   picture for four minutes, then commits to a slew at the end without
+   re-verifying anything. If the observatory goes unsafe mid-run, nothing
+   notices: `Mount-StandDown` calls `FindHome()` regardless, and a parked
+   mount is silently unparked at the start. Rain is only one way that
+   picture goes stale — others of the same shape are another client
+   taking the mount mid-run, PHD2 losing equipment, or a power event. See
+   the warning at the top of this file. Support for an ASCOM
+   `SafetyMonitor` is in development.
 
 ## Portability
 
@@ -750,10 +785,21 @@ other ASCOM driver can be passed in.
    OR at least one clicked button responded — is the third design, and
    the first two each looked correct until a specific run disproved
    them.*
-4. **`MaxStarLost = 8`** during the GA run remains a guess. The first
-   real-sky run (2026-07-30) recorded zero star losses, so the threshold
-   was never approached — which tells us it isn't obviously too tight,
-   but not much more than that. One clean night is not calibration.
+4. **`MaxStarLost = 8`** during the GA run is a guess, and is likely to
+   stay one. Both real-sky runs so far (2026-07-30 and 2026-08-02)
+   recorded zero star losses, so the threshold was never approached.
+
+   That is not going to change here: this rig is only rolled out when
+   cloud cover is forecast below about 20%, so the conditions that would
+   exercise the threshold are deliberately avoided. **If you image
+   through marginal skies, you are better placed to judge this number
+   than we are.** If you hit exit 42 on a night that was otherwise fine,
+   raise `-MaxStarLost` — and it would be useful to hear what value
+   worked.
+
+   The same applies to the missing guide-star SNR check above. Neither
+   gap has bitten, and neither is likely to bite on a rig operated this
+   way.
 
 Southern hemisphere is *not* a concern: approaching from the south and
 finishing northward is correct in both, and a GEM pointing west of the
