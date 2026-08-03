@@ -802,6 +802,14 @@ length 120 mm, search region 15 px, minimum star HFD 1.5 px.
 | Guide scope FL | 120 mm |
 | Access | Remote — laptop → mini PC |
 
+<img src="images/rig-atlasii-rc51.jpg" width="420" alt="The Atlas II / RC51 rig on its wheeled plywood platform">
+
+*A semi-permanent setup of the kind described in
+[Who this is for](#who-this-is-for): the tripod is bolted to a wheeled
+plywood platform and rolled out to the same marked spot each session, so
+polar alignment needs only a nudge and the geometry stays put from one
+night to the next.*
+
 ## Key design decisions and why
 
 
