@@ -37,6 +37,22 @@ set "TARGETDEC=0"
 REM Degrees from the meridian. POSITIVE = west, NEGATIVE = east.
 set "MERIDIANOFFSET=5"
 
+REM  ASCOM mount driver ProgID.
+REM
+REM  LEAVE THIS EMPTY to use the script's own default,
+REM  ASCOM.GS.Sky.Telescope (GS Server). Set it if you use a different
+REM  driver - there is no need to edit the PowerShell.
+REM
+REM    EQMOD.Telescope                 EQMOD
+REM    ASCOM.iOptron2017.Telescope     iOptron
+REM    ASCOM.ASIMount.Telescope        ZWO
+REM    ASCOM.Simulator.Telescope       ASCOM Telescope Simulator
+REM
+REM  List the drivers registered on this machine with:
+REM    $p = New-Object -ComObject ASCOM.Utilities.Profile
+REM    $p.RegisteredDevices('Telescope')
+set "MOUNTPROGID="
+
 REM --- end of settings ----------------------------------------------
 
 set "SCRIPT=%~dp0PHD2_GuidingAssistant.ps1"
@@ -45,12 +61,19 @@ set "ERRLOG=%LOGDIR%\stderr.txt"
 
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 
+REM An empty setting must not be passed at all - -MountProgId "" would
+REM look like a configured driver that cannot be opened.
+set "EXTRAARGS="
+if not "%MOUNTPROGID%"=="" set EXTRAARGS=%EXTRAARGS% -MountProgId "%MOUNTPROGID%"
+
 echo.
 echo  Starting PHD2 Guiding Assistant routine - %DATE% %TIME%
 echo   GA time %GASECONDS%s, Dec %TARGETDEC%, meridian offset %MERIDIANOFFSET% deg
+if "%EXTRAARGS%"=="" echo   Mount: script default (GS Server)
+if not "%EXTRAARGS%"=="" echo   Mount:%EXTRAARGS%
 echo.
 
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds %GASECONDS% -TargetDec %TARGETDEC% -MeridianOffsetDeg %MERIDIANOFFSET% 2>>"%ERRLOG%"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SCRIPT%" -GASeconds %GASECONDS% -TargetDec %TARGETDEC% -MeridianOffsetDeg %MERIDIANOFFSET%%EXTRAARGS% 2>>"%ERRLOG%"
 
 set RC=%ERRORLEVEL%
 

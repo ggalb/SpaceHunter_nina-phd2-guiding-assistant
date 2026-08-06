@@ -243,7 +243,8 @@ catch {
 }
 
 $script:LogFile    = Join-Path $LogDir ("PHD2_GA_{0:yyyy-MM-dd_HHmmss}.log" -f (Get-Date))
-$script:LogBroken  = $false
+$script:LogBroken     = $false
+$script:LogFailStreak = 0
 
 Write-Host "LOG FILE: $script:LogFile"
 
@@ -252,13 +253,40 @@ function Write-Log {
     $line = "{0:yyyy-MM-dd HH:mm:ss}  {1,-5}  {2}" -f (Get-Date), $Level, $Message
     Write-Host $line
     if ($script:LogBroken) { return }
-    try {
-        Add-Content -Path $script:LogFile -Value $line -Encoding UTF8 -ErrorAction Stop
+
+    # Retry before giving up on a line. A sync client or virus scanner
+    # (OneDrive, Defender) can hold the file for a few milliseconds, and
+    # Add-Content opens and closes it on EVERY line, which gives them
+    # plenty of opportunity. Observed on all three runs of 2026-08-03.
+    #
+    # This used to latch LogBroken after a single failure, which threw
+    # away the rest of the run's log to a lock that cleared in
+    # milliseconds - on one run it hit the third line and left almost the
+    # entire run on the console only. That matters: the README's claim
+    # that this script cannot fail silently rests on the log existing
+    # afterwards.
+    $err = ''
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        try {
+            Add-Content -Path $script:LogFile -Value $line -Encoding UTF8 -ErrorAction Stop
+            $script:LogFailStreak = 0
+            return
+        }
+        catch {
+            $err = $_.Exception.Message
+            if ($attempt -lt 4) { Start-Sleep -Milliseconds (50 * $attempt) }
+        }
     }
-    catch {
-        # Say so once, on stdout, instead of failing silently forever.
+
+    # Every retry failed. Only abandon the file after a run of failures -
+    # a persistent problem, not a blip.
+    $script:LogFailStreak++
+    if ($script:LogFailStreak -eq 1) {
+        Write-Host "WARNING: a log line could not be written after 4 attempts: $err"
+    }
+    if ($script:LogFailStreak -ge 10) {
         $script:LogBroken = $true
-        Write-Host "WARNING: log file writes are failing: $($_.Exception.Message)"
+        Write-Host "WARNING: log file writes have failed $($script:LogFailStreak) times running - giving up on the file. Console output continues."
     }
 }
 
@@ -494,13 +522,13 @@ function Mount-ReadCapabilities {
 
     # --- advisories ---------------------------------------------------
     if ($script:Caps['IsAltAz']) {
-        Write-Log ("Mount reports Alt-Az alignment. The 'Dec 0, {0} deg west of meridian' " +
-                   "positioning assumes a German equatorial; results may not be meaningful." -f $MeridianOffsetDeg) 'WARN'
+        Write-Log (("Mount reports Alt-Az alignment. The 'Dec 0, {0} deg west of meridian' " +
+                    "positioning assumes a German equatorial; results may not be meaningful.") -f $MeridianOffsetDeg) 'WARN'
     }
     if ($null -ne $eq -and [int]$eq -eq 2) {
-        Write-Log ("Driver uses J2000 coordinates while this script computes of-date coordinates " +
-                   "from SiderealTime. Offset is ~0.4 deg in 2026 - negligible at a {0} deg " +
-                   "meridian offset, but worth knowing." -f $MeridianOffsetDeg) 'WARN'
+        Write-Log (("Driver uses J2000 coordinates while this script computes of-date coordinates " +
+                    "from SiderealTime. Offset is ~0.4 deg in 2026 - negligible at a {0} deg " +
+                    "meridian offset, but worth knowing.") -f $MeridianOffsetDeg) 'WARN'
     }
     if (-not $script:Caps['HasPierSide']) {
         Write-Log "SideOfPier unavailable or pierUnknown - the post-slew check will test declination and hour angle only." 'WARN'
@@ -517,8 +545,8 @@ function Mount-ValidateSite {
     }
     $lst = [double]$lst
     if ($lst -lt 0 -or $lst -ge 24 -or [double]::IsNaN($lst)) {
-        Fail 23 ("Mount reports SiderealTime = {0}, which is not a valid 0-24h value. " +
-                 "Usually means the driver has no site configured or no mount attached." -f $lst)
+        Fail 23 (("Mount reports SiderealTime = {0}, which is not a valid 0-24h value. " +
+                  "Usually means the driver has no site configured or no mount attached.") -f $lst)
     }
 
     $lat = Get-MountProp 'SiteLatitude'  $null
@@ -901,6 +929,7 @@ $BS_CHECKBOX      = 0x02
 $BS_AUTOCHECKBOX  = 0x03
 $BS_3STATE        = 0x05
 $BS_AUTO3STATE    = 0x06
+$BS_DEFPUSHBUTTON = 0x01
 
 $BM_CLICK    = 0x00F5
 $BM_GETCHECK = 0x00F0
@@ -1126,6 +1155,56 @@ function Log-WindowDiagnostics {
     Write-Log "--------------------------" 'WARN'
 }
 
+# PHD2 asks "Ok to disable guide output?" before opening the Guiding
+# Assistant, UNLESS "Don't ask again" has been ticked on that profile.
+# A fresh profile therefore always shows it - which meant every new user
+# hit exit 41 on their very first run: the new-window detection accepted
+# the confirmation as the GA dialog, then waited 60s for a Start button
+# it does not have. Found 2026-08-03 on a clean Simulation profile; the
+# development rig never showed it because the box had been ticked by hand
+# long ago.
+#
+# Recognised STRUCTURALLY, not by caption, so it works in any language:
+# a confirmation is small - a handful of controls - and has a DEFAULT
+# push button. The GA dialog has dozens of controls. We click the default
+# button, which is exactly what pressing Enter would do, and carry on
+# waiting for the real window.
+#
+# Deliberately NOT ticking "Don't ask again" on the user's behalf: it is
+# their PHD2 setting, and silently changing a user's configuration to
+# work around our own problem is the wrong trade.
+function Test-AndDismissConfirmDialog {
+    param([IntPtr]$Hwnd)
+
+    $controls = @(Get-ChildControls $Hwnd)
+    if ($controls.Count -eq 0 -or $controls.Count -gt 8) { return $false }
+
+    $defBtn = $null
+    foreach ($c in $controls) {
+        if ($c.Class -ne 'Button') { continue }
+        $style = 0
+        try { $style = [Native.Win32Menu]::GetWindowLongW($c.Handle, $GWL_STYLE) } catch { continue }
+        if (($style -band $BS_TYPEMASK) -eq $BS_DEFPUSHBUTTON) { $defBtn = $c; break }
+    }
+    if (-not $defBtn) { return $false }
+
+    Write-Log (("A small dialog ({0} controls) appeared instead of the Guiding Assistant - almost " +
+                "certainly PHD2's 'Ok to disable guide output?' confirmation. Clicking its default " +
+                "button ('{1}') and continuing to wait for the Guiding Assistant.") -f `
+                $controls.Count, $defBtn.Text) 'WARN'
+    Write-Log ("Tick 'Don't ask again' in that dialog yourself if you would rather not see this " +
+               "warning on every run.") 'WARN'
+
+    try {
+        [void][Native.Win32Menu]::SendMessageW($defBtn.Handle, [uint32]$BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+    } catch {
+        Write-Log "Could not click the confirmation's default button: $($_.Exception.Message)" 'WARN'
+        return $false
+    }
+    Start-Sleep -Milliseconds 750
+    return $true
+}
+
 # Locate the GA dialog and return its WINDOW HANDLE (not a UIA element).
 # UIA can see this window but not its children - wxWidgets dialogs expose
 # poorly through the MSAA-to-UIA bridge - so everything downstream is
@@ -1178,13 +1257,20 @@ function Find-GAWindow {
             $now = Get-TopLevelWindowMap
             foreach ($key in $now.Keys) {
                 if (-not $WindowsBefore.ContainsKey($key)) {
-                    $title = $now[$key]
+                    $title  = $now[$key]
                     # Ignore the PHD2 main window itself if it re-registers
                     if ($title -like 'PHD2*') { continue }
+                    $handle = [IntPtr][int]$key
+
+                    # A new window is not necessarily OUR window. PHD2 may
+                    # put a confirmation in front of the Guiding Assistant.
+                    # Dismiss it and keep looking rather than accepting it.
+                    if (Test-AndDismissConfirmDialog $handle) { continue }
+
                     Write-Log ("Found a NEW window after the menu command: '{0}'" -f $title)
-                    Write-Log ("If that is the Guiding Assistant in your language, add it to " +
-                               "-GAWindowTitles so future runs match it directly.") 'WARN'
-                    return [IntPtr][int]$key
+                    Write-Log (("If that is the Guiding Assistant in your language, add it to " +
+                                "-GAWindowTitles so future runs match it directly.")) 'WARN'
+                    return $handle
                 }
             }
         }
@@ -1772,9 +1858,9 @@ try {
             Fail 44 ("Min-move values unchanged and none of the {0} 'Apply' button(s) responded - the clicks did not take." -f $applyBtns.Count)
         }
         if ($stillEnabled -gt 0) {
-            Write-Log ("Min-move values unchanged. {0} button(s) responded, {1} still enabled - PHD2 most " +
-                       "likely recommended values this rig already uses, so applying them changed nothing." -f `
-                       $wentDisabled, $stillEnabled) 'WARN'
+            Write-Log (("Min-move values unchanged. {0} button(s) responded, {1} still enabled - PHD2 most " +
+                        "likely recommended values this rig already uses, so applying them changed nothing.") -f `
+                        $wentDisabled, $stillEnabled) 'WARN'
         } else {
             Write-Log ("Min-move values are unchanged, but every 'Apply' button responded. PHD2 simply " +
                        "recommended the values already in use.") 'WARN'

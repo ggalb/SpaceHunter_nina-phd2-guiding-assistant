@@ -188,12 +188,30 @@ Only then let it near the telescope.
 ## Changing the defaults
 
 
-Three settings live at the top of `Run_PHD2_GuidingAssistant.bat`:
+Four settings live at the top of `Run_PHD2_GuidingAssistant.bat`:
 
 ```bat
 set "GASECONDS=130"
 set "TARGETDEC=0"
 set "MERIDIANOFFSET=5"
+set "MOUNTPROGID="
+```
+
+The first three are covered below. `MOUNTPROGID` is your ASCOM mount
+driver — **leave it empty** and the script uses its default of
+`ASCOM.GS.Sky.Telescope` (GS Server). Set it if you use anything else:
+
+```bat
+set "MOUNTPROGID=EQMOD.Telescope"
+```
+
+Other common values are `ASCOM.iOptron2017.Telescope`,
+`ASCOM.ASIMount.Telescope`, and `ASCOM.Simulator.Telescope` for indoor
+testing. To list what is registered on your machine:
+
+```powershell
+$p = New-Object -ComObject ASCOM.Utilities.Profile
+$p.RegisteredDevices('Telescope')
 ```
 
 There are two ways to change them. **Method 1 is easier and is the one
@@ -391,6 +409,35 @@ A non-zero exit fails the N.I.N.A. instruction and will fire the
 `Failures to Pushover` global trigger (Emergency / Siren). The script
 always attempts `stop_capture` + `FindHome()` before exiting, so the rig
 is left safe. A timestamped log is written beside the script.
+
+Log writes are retried a few times before being given up on, and the
+script only stops writing to the file after ten consecutive failures.
+Sync clients and virus scanners hold a file for a few milliseconds at a
+time, and a single collision used to cost the rest of that run's log —
+which mattered, because everything below rests on the log being there
+afterwards.
+
+## PHD2 asks before disabling guide output
+
+The first time you open the Guiding Assistant on a PHD2 profile, PHD2
+puts up a confirmation:
+
+> The Guiding Assistant will disable guide output and allow the guide
+> star to drift. Ok to disable guide output?
+
+**The script handles this for you** — it recognises the confirmation and
+clicks OK, then carries on waiting for the Guiding Assistant itself. You
+do not need to tick *Don't show again*, and there is nothing to
+configure.
+
+It is recognised by shape rather than wording — a small dialog with a
+default push button, where the Guiding Assistant has dozens of controls —
+so this works in any language.
+
+The script deliberately does **not** tick *Don't show again* on your
+behalf. That is your PHD2 setting, and silently changing your
+configuration to work around our own problem is the wrong trade. If you
+would rather not see the log note on every run, tick it yourself.
 
 ## Test status
 
