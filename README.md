@@ -68,19 +68,27 @@ right there.
 | File | Purpose |
 |---|---|
 | `PHD2_GuidingAssistant.ps1` | The routine itself |
-| `Run_PHD2_GuidingAssistant.bat` | What N.I.N.A. calls; holds the three settings |
+| `Run_PHD2_GuidingAssistant.bat` | What N.I.N.A. calls; holds the settings |
 
-**Optional extras.** Standalone tools — the main routine never calls
-them, and it works fine without them:
+Also at the top level, and worth having before your first real run:
 
 | File | When you'd want it |
 |---|---|
-| `TEST_Simulate_PHD2_GuidingAssistant.bat` | Rehearse a run without moving the mount |
-| `Convert-AltAzToDecHA.ps1` | Work out Dec/hour-angle numbers if you think in Alt/Az |
-| `Dump-AscomCapabilities.ps1` | Ask a mount driver what it actually supports |
-| `Run_Dump-AscomCapabilities.bat` | Double-click front end for the above |
-| `HOWTO_Dump_Capabilities.md` | Instructions to send with the dump tool |
-| `ASCOM_Mount_Capabilities.md` | Collected results from different mount drivers |
+| `TEST_Simulate_PHD2_GuidingAssistant.bat` | Rehearse a run without moving the mount — see [Before first use](#before-first-use) |
+
+**Optional extras**, in the `extras/` folder. Standalone tools and
+reference notes — the main routine never calls them, and it works fine
+without them:
+
+| File | When you'd want it |
+|---|---|
+| `extras/Convert-AltAzToDecHA.ps1` | Work out Dec/hour-angle numbers if you think in Alt/Az |
+| `extras/Dump-AscomCapabilities.ps1` | Ask a mount driver what it actually supports |
+| `extras/Run_Dump-AscomCapabilities.bat` | Double-click front end for the above |
+| `extras/Dump-PHD2Buttons.ps1` | Read PHD2's exact button captions — for reporting a language that isn't mapped yet |
+| `extras/Run_Dump-PHD2Buttons.bat` | Double-click front end for the above |
+| `extras/HOWTO_Dump_Capabilities.md` | Instructions to send with the ASCOM dump tool |
+| `extras/ASCOM_Mount_Capabilities.md` | Collected results from different mount drivers |
 
 **Requirements:** Windows, PHD2, the ASCOM Platform and your mount's
 driver. Nothing to install — the scripts use Windows PowerShell 5.1,
@@ -329,10 +337,10 @@ to the sky, Alt/Az are fixed relative to your horizon**, so the same
 Alt/Az corresponds to a different Dec/HA at every latitude. You have to
 convert for *your* site.
 
-Use `Convert-AltAzToDecHA.ps1`:
+Use `extras/Convert-AltAzToDecHA.ps1`:
 
 ```powershell
-.\Convert-AltAzToDecHA.ps1 -Alt 46 -Az 90 -Lat 33.798
+.\extras\Convert-AltAzToDecHA.ps1 -Alt 46 -Az 90 -Lat 33.798
 ```
 
 Azimuth convention: 0 = North, 90 = East, 180 = South, 270 = West.
@@ -343,7 +351,7 @@ is a poor place to measure.
 It also works in reverse, to see where your current settings point:
 
 ```powershell
-.\Convert-AltAzToDecHA.ps1 -Dec 0 -MeridianOffset 5 -Lat 33.798
+.\extras\Convert-AltAzToDecHA.ps1 -Dec 0 -MeridianOffset 5 -Lat 33.798
 ```
 
 Worked example — **Alt 46°, Az 90° (due east)**:
@@ -793,7 +801,7 @@ other ASCOM driver can be passed in.
 
 - **Capabilities are read at runtime**, after connecting to the actual
   mount, and logged. See the warning in
-  `ASCOM_Mount_Capabilities.md`: flags are *not* static per driver, so a
+  `extras/ASCOM_Mount_Capabilities.md`: flags are *not* static per driver, so a
   lookup table would be wrong.
 - **`-EndAction`** accepts `Auto` (default), `Home`, `Park` or `None`.
   `Auto` prefers `FindHome()`, falls back to `Park()`, and warns if the
