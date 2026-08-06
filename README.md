@@ -413,10 +413,11 @@ Add `-Simulate` to rehearse it with no mount movement at all.
 | 50 | Stand-down (`FindHome` / `Park`) failed or timed out |
 | 99 | Unexpected error |
 
-A non-zero exit fails the N.I.N.A. instruction and will fire the
-`Failures to Pushover` global trigger (Emergency / Siren). The script
-always attempts `stop_capture` + `FindHome()` before exiting, so the rig
-is left safe. A timestamped log is written beside the script.
+A non-zero exit fails the N.I.N.A. instruction, which will fire whatever
+failure notification you have configured — N.I.N.A. can push on
+instruction failure. The script always attempts `stop_capture` +
+`FindHome()` before exiting, so the rig is left in a defined position. A
+timestamped log is written beside the script.
 
 Log writes are retried a few times before being given up on, and the
 script only stops writing to the file after ten consecutive failures.
@@ -660,14 +661,14 @@ straight out of the log.
 
 > ⚠️ **Read the safety warning at the top of this file first.** What
 > follows establishes that the *automation* runs without a rendered
-> display or an attached session. It does **not** mean the script is
-> safe to leave unattended under a roof — it has no safety monitoring
+> display or an attached session. It does **NOT** mean the script is
+> safe to leave unattended under a roof — **it has no safety monitoring
 > at all, and will slew the mount home even if the roof has closed
-> beneath it.
+> beneath it.**
 
-If your rig lives in an observatory and nobody is present — N.I.N.A.
-looping, no polar alignment step, no human until something breaks —
-this works. It has been tested.
+If your rig lives in a permanent setup **without a roof** and nobody is
+present — N.I.N.A. looping, no polar alignment step, no human until
+something breaks — this works. It has been tested.
 
 ### The software side is proven
 
@@ -680,7 +681,7 @@ screen position.
 client closed for the whole duration — including the single remaining UI
 Automation call, which finds the PHD2 main window. A *disconnected*
 session is the harsher case; a **locked** console session, which is what
-an unattended observatory actually runs, is comfortably safer.
+an unattended rig actually runs, is comfortably safer.
 
 The one part that would need a live input desktop is the `SendKeys`
 fallback for opening the Tools menu. It is the third fallback and only
@@ -701,10 +702,14 @@ it:
 
 ### If it ever does fail unattended
 
-It fails **safely**, not silently: the mount is sent home, the N.I.N.A.
-instruction fails, and your notification fires. The worst outcome is a
-night imaged on the previous session's min-move values — which is
-exactly where you would be without this script at all.
+**It fails in a defined way, not silently:** the mount is sent home, the
+N.I.N.A. instruction fails, and your notification fires. The worst
+outcome is a night imaged on the previous session's min-move values —
+which is exactly where you would be without this script at all.
+
+**"Defined" is not "safe".** Sending the mount home is the right move on
+an open rig and the wrong one under a closed roof. This script does not
+know the difference. See the warning at the top of this file.
 
 ## Keeping it working when software updates
 
