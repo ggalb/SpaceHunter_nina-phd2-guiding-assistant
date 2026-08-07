@@ -121,8 +121,11 @@ this evening. Since measuring it is mechanical, takes a few minutes, and
 wants doing at the start of every session, it is worth automating — which
 is all this script is.
 
-It also gives you a free second opinion on your polar alignment, from a
-completely different method to whatever you aligned with.
+It also gives you a free drift-based check on polar alignment — a **trend
+indicator, not a measurement**. Two minutes of Dec drift at one sky
+position mostly shows the *azimuth* component, so it won't agree with a
+three-point plate-solved routine and isn't meant to. Watch for changes:
+if it normally reads 3 arc-min and one night reads 15, something moved.
 
 ## What the script does
 
